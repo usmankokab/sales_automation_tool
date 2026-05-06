@@ -1,0 +1,34 @@
+{
+  "credentials": {
+    "username": "your_username",
+    "password": "your_password"
+  },
+  "polling": {
+    "interval_seconds": 30,
+    "max_wait_minutes": 2
+  },
+  "trade_defaults": {
+    "default_lot_size": 0.01,
+    "default_stop_loss": 10,
+    "default_take_profit": 20
+  },
+  "urls": {
+    "signal_tab": "https://your-ctrader-web/signal-tab-url",
+    "execution_tab": "https://your-ctrader-web/execution-tab-url"
+  },
+  "selectors": {
+    "signal_keyword": ".signal-container .new-trade-keyword",
+    "signal_direction": ".signal-container .direction",
+    "signal_symbol": ".signal-container .symbol",
+    "signal_lot_size": ".signal-container .lot-size",
+    "execution_buy_button": "#buy-button",
+    "execution_sell_button": "#sell-button",
+    "execution_symbol_input": "#symbol-input",
+    "execution_lot_input": "#lot-size-input",
+    "execution_submit_button": "#submit-order-button"
+  },
+  "chrome_options": {
+    "headless": true,
+    "window_size": "1920x1080"
+  }
+}
