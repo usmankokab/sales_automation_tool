@@ -51,7 +51,7 @@ CONFIG = {
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('ctrader_copier.log'),
         logging.StreamHandler()

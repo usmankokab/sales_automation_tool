@@ -14,11 +14,26 @@ Usage:
 
 import argparse
 import sys
+import logging
 import os
 from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
+
+# Configure logging
+log_file = 'siat_application.log'
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Also log to console
+    ]
+)
+
+logger = logging.getLogger(__name__)
+logger.info("SIAT Application started")
 
 from ui.dashboard import main as dashboard_main
 

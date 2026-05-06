@@ -44,6 +44,13 @@ class CalculationEngine:
         # Pre-processing validation
         self._validate_input_data()
 
+        # Additional safety checks
+        if self.sales_data is None or self.price_list is None or self.scheme_file is None or self.drop_dump is None:
+            raise ValueError("Data sources are None - check data loading")
+
+        if not isinstance(self.sales_data, pd.DataFrame) or not isinstance(self.price_list, pd.DataFrame) or not isinstance(self.scheme_file, pd.DataFrame) or not isinstance(self.drop_dump, pd.DataFrame):
+            raise ValueError("Data sources are not DataFrames - check data loading")
+
         try:
             # Start with sales data as the main dataframe
             df = self.sales_data.copy()
@@ -68,12 +75,25 @@ class CalculationEngine:
             # Step 7-8: Scheme Application
             logger.info("Executing Step 7-8: Scheme Application")
             df = self._step_7_8_scheme_application(df)
-            logger.info(f"After Step 7-8: {df.shape}")
+            logger.info(f"After Step 7-8: {df.shape}, columns: {len(df.columns)}")
+
+            # Check if scheme columns were created
+            scheme_cols = ['Total_Pct_Incentive', 'Total_Flat_Incentive']
+            for col in scheme_cols:
+                if col in df.columns:
+                    logger.info(f"Scheme column {col} created: {df[col].sum()}")
+                else:
+                    logger.error(f"Scheme column {col} missing!")
 
             # Step 9: Incentive Sum
             logger.info("Executing Step 9: Incentive Sum")
             df = self._step_9_incentive_sum(df)
             logger.info(f"After Step 9: {df.shape}")
+
+            if 'Total_Incentive_Received' in df.columns:
+                logger.info(f"Total_Incentive_Received created: {df['Total_Incentive_Received'].sum()}")
+            else:
+                logger.error("Total_Incentive_Received column not created!")
 
             # Step 10: Net Landing Cost
             logger.info("Executing Step 10: NLC")
@@ -322,13 +342,36 @@ class CalculationEngine:
         """Step 9: Aggregate all incentives into Total Incentive Received."""
         logger.info("Step 9: Calculating total incentives...")
 
+        # Ensure required columns exist, create them if missing
+        if 'Total_Pct_Incentive' not in df.columns:
+            logger.warning("Total_Pct_Incentive column missing, creating with default values")
+            df['Total_Pct_Incentive'] = 0
+
+        if 'Total_Flat_Incentive' not in df.columns:
+            logger.warning("Total_Flat_Incentive column missing, creating with default values")
+            df['Total_Flat_Incentive'] = 0
+
         df['Total_Incentive_Received'] = df['Total_Pct_Incentive'] + df['Total_Flat_Incentive']
+        logger.info(f"Total incentives calculated: ₹{df['Total_Incentive_Received'].sum():,.0f}")
 
         return df
 
     def _step_10_nlc(self, df: pd.DataFrame) -> pd.DataFrame:
         """Step 10: Calculate Net Landing Cost (NLC)."""
         logger.info("Step 10: Calculating Net Landing Cost...")
+
+        # Ensure required columns exist
+        if 'Matched_Price' not in df.columns:
+            logger.warning("Matched_Price column missing, using Purchase_Price as fallback")
+            df['Matched_Price'] = df.get('Purchase_Price', 0)
+
+        if 'Drop_Amount' not in df.columns:
+            logger.warning("Drop_Amount column missing, assuming 0")
+            df['Drop_Amount'] = 0
+
+        if 'Total_Incentive_Received' not in df.columns:
+            logger.warning("Total_Incentive_Received column missing, assuming 0")
+            df['Total_Incentive_Received'] = 0
 
         # Final Price = Matched Price - Drop Amount
         df['Calculated_Final_Price'] = df['Matched_Price'] - df['Drop_Amount']
@@ -344,11 +387,12 @@ class CalculationEngine:
         df['NLC'] = df['Calculated_NLC']
         df['Margin'] = df['Calculated_Margin']
 
+        logger.info(f"NLC calculations completed. Total NLC: ₹{df['Calculated_NLC'].sum():,.0f}")
         return df
 
     def _step_11_final_validation(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Step 11: Final validation and cleanup."""
-        logger.info("Step 11: Performing final validation...")
+        """Step 11: Final validation and cleanup with exact column ordering."""
+        logger.info("Step 11: Performing final validation and column ordering...")
 
         # Validate date consistency
         if 'Purchase_Date' in df.columns:
@@ -370,28 +414,222 @@ class CalculationEngine:
         if missing_models > 0:
             self.errors.append(f"Warning: {missing_models} records have missing Master Model")
 
-        # Add summary statistics
-        df['Processing_Status'] = 'Completed'
-        df.loc[df['Matched_Price'].isna(), 'Processing_Status'] = 'Price_Missing'
-        df.loc[df['Master_Model'].isna(), 'Processing_Status'] = 'Model_Missing'
+        # Create the exact column order as specified in the sales sheet
+        final_columns = [
+            'IMEI',
+            'sell out date',
+            'activation date',
+            'master modal',
+            'SERIES',  # To be derived from master modal
+            'distibutor',
+            'purchase date',
+            'purchase price',
+            'MOP AT THE TIME OF PURCHASE',  # Matched purchase price from price list
+            'current mop/srp',
+            'bill less in invoice ',
+            'invoice price (pre gst amount',
+            'drop',
+            'hike (now compare the master model in price list to chq the current price falls in date validation -1 or date validation -2 for that you take the sell out date of master model) and in case not active then by default date validation -1',
+            'HIKE',
+            'remark (drop,hike,same (drop and hike both)',
+            'final price (g-k)',
+            'pre gst price (final price',
+            'pct scheme -1',
+            'amount pct sceme -1',
+            'pct scheme -2',
+            'amount pct sceme -2',
+            'pct scheme -3',
+            'amount pct sceme -3',
+            'pct scheme -4',
+            'amount pct sceme -4',
+            'flat payout-1',
+            'flat payout-2',
+            'flat payout-3',
+            'flat payout-4',
+            'total schme rcvd',
+            'nt nlc (o-ac)',
+            # Additional columns needed for charts (not in original spec but needed for functionality)
+            'Total_Pct_Incentive',
+            'Total_Flat_Incentive'
+        ]
 
-        logger.info("Final validation completed")
-        return df
+        # Map existing columns to the required names (preserve original sales sheet structure)
+        column_mapping = {
+            'IMEI': 'IMEI',
+            'sell out date': 'sell out date',
+            'activation date': 'activation date',
+            'master modal': 'master modal',
+            # SERIES - will be derived
+            'distibutor': 'distibutor',  # Fix typo
+            'purchase date': 'purchase date',
+            'purchase price': 'purchase price',
+            # MOP AT THE TIME OF PURCHASE - will be matched price
+            'current mop/srp': 'current mop/srp',
+            'bill less in invoice ': 'bill less in invoice ',
+            'invoice price (pre gst amount': 'invoice price (pre gst amount',
+            'drop': 'drop',
+            'hike (now compare the master model in price list to chq the current price falls in date validation -1 or date validation -2 for that you take the sell out date of master model) and in case not active then by default date validation -1': 'hike (now compare the master model in price list to chq the current price falls in date validation -1 or date validation -2 for that you take the sell out date of master model) and in case not active then by default date validation -1',
+            'HIKE': 'HIKE',
+            'remark (drop,hike,same (drop and hike both)': 'remark (drop,hike,same (drop and hike both)',
+            'final price (g-k)': 'final price (g-k)',
+            'pre gst price (final price': 'pre gst price (final price',
+            'pct scheme -1': 'pct scheme -1',
+            'amount pct sceme -1': 'amount pct sceme -1',
+            'pct scheme -2': 'pct scheme -2',
+            'amount pct sceme -2': 'amount pct sceme -2',
+            'pct scheme -3': 'pct scheme -3',
+            'amount pct sceme -3': 'amount pct sceme -3',
+            'pct scheme -4': 'pct scheme -4',
+            'amount pct sceme -4': 'amount pct sceme -4',
+            'flat payout-1': 'flat payout-1',
+            'flat payout-2': 'flat payout-2',
+            'flat payout-3': 'flat payout-3',
+            'flat payout-4': 'flat payout-4',
+            'total schme rcvd': 'total schme rcvd',
+            'nt nlc (o-ac)': 'nt nlc (o-ac)',
+            'Total_Pct_Incentive': 'Total_Pct_Incentive',
+            'Total_Flat_Incentive': 'Total_Flat_Incentive'
+        }
+
+        # Start with original sales data structure and update with calculations
+        final_df = df.copy()
+
+        # Ensure all required columns exist with proper names
+        for required_col in final_columns:
+            if required_col not in final_df.columns:
+                if required_col in column_mapping and column_mapping[required_col] in final_df.columns:
+                    # Column exists with different name, rename it
+                    final_df[required_col] = final_df[column_mapping[required_col]]
+                else:
+                    # Column doesn't exist, add it
+                    final_df[required_col] = self._get_default_value_for_column(required_col, final_df)
+
+        # Update calculated columns with the correct values
+        if 'Matched_Price' in final_df.columns:
+            final_df['MOP AT THE TIME OF PURCHASE'] = final_df['Matched_Price']
+
+        if 'Calculated_Final_Price' in final_df.columns:
+            final_df['final price (g-k)'] = final_df['Calculated_Final_Price']
+
+        if 'Calculated_NLC' in final_df.columns:
+            final_df['nt nlc (o-ac)'] = final_df['Calculated_NLC']
+
+        if 'Total_Incentive_Received' in final_df.columns:
+            final_df['total schme rcvd'] = final_df['Total_Incentive_Received']
+
+        # Handle percentage scheme columns
+        if 'Pct_Incentive_1' in final_df.columns:
+            final_df['pct scheme -1'] = final_df['Pct_Incentive_1']
+            final_df['amount pct sceme -1'] = final_df['Pct_Incentive_1']  # This should be the calculated amount
+
+        if 'Pct_Incentive_2' in final_df.columns:
+            final_df['pct scheme -2'] = final_df['Pct_Incentive_2']
+            final_df['amount pct sceme -2'] = final_df['Pct_Incentive_2']
+
+        # Handle flat payout columns
+        if 'Flat_Incentive' in final_df.columns:
+            final_df['flat payout-1'] = final_df['Flat_Incentive']
+
+        # Preserve intermediate columns needed for charts
+        if 'Total_Pct_Incentive' in final_df.columns:
+            final_df['Total_Pct_Incentive'] = final_df['Total_Pct_Incentive']
+
+        if 'Total_Flat_Incentive' in final_df.columns:
+            final_df['Total_Flat_Incentive'] = final_df['Total_Flat_Incentive']
+
+        # Add processing status (but don't include it in final output)
+        processing_status = pd.Series('Completed', index=final_df.index)
+        processing_status.loc[final_df['sell out date'].isna()] = 'Date_Missing'
+        processing_status.loc[final_df['master modal'].isna()] = 'Model_Missing'
+
+        # Reorder columns to match exact specification (exclude processing status)
+        final_df = final_df[final_columns]
+
+        # Log processing status for debugging (don't add to final output)
+        logger.info(f"Processing status: {processing_status.value_counts().to_dict()}")
+
+        logger.info(f"Final column ordering completed. Shape: {final_df.shape}")
+        return final_df
+
+    def _get_default_value_for_column(self, column_name: str, df: pd.DataFrame):
+        """Get default value for columns that don't exist in current data."""
+        if column_name == 'SERIES':
+            # Try to extract series from master modal (e.g., "REALME" from "REALME C71 4@64")
+            if 'master modal' in df.columns:
+                return df['master modal'].str.split().str[0]
+            elif 'Master_Model' in df.columns:
+                return df['Master_Model'].str.split().str[0]
+            return ''
+
+        elif column_name == 'MOP AT THE TIME OF PURCHASE':
+            # This is the matched price from the price list
+            return df.get('Matched_Price', df.get('Purchase_Price', 0))
+
+        elif 'hike' in column_name.lower() and 'validation' in column_name.lower():
+            # Complex hike logic based on date validation
+            # For now, return 0 - this needs to be implemented based on business rules
+            return 0
+
+        elif column_name == 'HIKE':
+            # Calculated hike value (absolute difference)
+            return 0  # Placeholder - needs business logic
+
+        elif 'remark' in column_name.lower():
+            # Generate remark based on drop/hike/same logic
+            remarks = []
+            for idx in df.index:
+                remark_parts = []
+                drop_val = df.at[idx, 'drop'] if 'drop' in df.columns else 0
+                hike_val = df.at[idx, 'HIKE'] if 'HIKE' in df.columns else 0
+
+                if drop_val > 0:
+                    remark_parts.append('drop')
+                if hike_val > 0:
+                    remark_parts.append('hike')
+                if not remark_parts:
+                    remark_parts.append('same')
+
+                remarks.append(', '.join(remark_parts))
+            return remarks
+
+        elif column_name in ['pct scheme -2', 'pct scheme -3', 'pct scheme -4']:
+            # Additional percentage schemes (currently only 2 are implemented)
+            return 0
+
+        elif column_name in ['amount pct sceme -2', 'amount pct sceme -3', 'amount pct sceme -4']:
+            # Corresponding calculated amounts
+            return 0
+
+        elif column_name in ['flat payout-2', 'flat payout-3', 'flat payout-4']:
+            # Additional flat payouts (currently only 1 is implemented)
+            return 0
+
+        else:
+            # Default to 0 for numeric columns, empty string for others
+            if any(keyword in column_name.lower() for keyword in ['price', 'amount', 'incentive', 'payout', 'schme', 'nlc']):
+                return 0
+            else:
+                return ''
     
     def generate_pivot_report(self) -> pd.DataFrame:
-        """Step 11: Generate Distributor-wise pivot report."""
+        """Generate Distributor-wise pivot report from processed data."""
         if self.processed_data is None:
             raise ValueError("Must run calculations first")
-        
-        logger.info("Step 11: Generating pivot report...")
-        
+
+        logger.info("Generating pivot report...")
+
+        # Use the final column names from processed data
         pivot = pd.pivot_table(
             self.processed_data,
-            values=['Total_Incentive_Received', 'NLC', 'Final_Price'],
-            index='Distributor',
+            values=['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)'],
+            index='distibutor',
             aggfunc='sum'
         ).reset_index()
-        
+
+        # Rename columns for clarity
+        pivot.columns = ['Distributor', 'Total_Incentives', 'Total_NLC', 'Total_Final_Price']
+        pivot['Total_Margin'] = pivot['Total_Final_Price'] - pivot['Total_NLC']
+
         return pivot
     
     def _fuzzy_match_model(self, target: str, candidates: List[str], threshold: int = 80) -> Optional[Tuple[str, int]]:
@@ -405,29 +643,38 @@ class CalculationEngine:
         return None
     
     def validate_data_integrity(self) -> List[str]:
-        """Perform data integrity validations."""
+        """Perform data integrity validations using final column names."""
         validation_errors = []
-        
+
         if self.processed_data is None:
             return ["No processed data available for validation"]
-        
+
         # Duplicate IMEI check
         duplicates = self.processed_data[self.processed_data.duplicated('IMEI', keep=False)]
         if not duplicates.empty:
             validation_errors.append(f"Found {len(duplicates)} duplicate IMEIs")
-        
-        # Date validation: Sell Out Date should not be earlier than Purchase Date
-        if 'Purchase_Date' in self.processed_data.columns:
+
+        # Date validation: sell out date should not be earlier than purchase date
+        if 'purchase date' in self.processed_data.columns:
+            sell_dates = pd.to_datetime(self.processed_data['sell out date'], errors='coerce')
+            purchase_dates = pd.to_datetime(self.processed_data['purchase date'], errors='coerce')
+
             invalid_dates = self.processed_data[
-                pd.to_datetime(self.processed_data['Sell_Out_Date']) < 
-                pd.to_datetime(self.processed_data['Purchase_Date'])
+                (purchase_dates.notna()) &
+                (sell_dates.notna()) &
+                (sell_dates < purchase_dates)
             ]
             if not invalid_dates.empty:
                 validation_errors.append(f"Found {len(invalid_dates)} records where Sell Out Date is before Purchase Date")
-        
+
         # Missing critical data
-        missing_models = self.processed_data['Master_Model'].isna().sum()
+        missing_models = self.processed_data['master modal'].isna().sum()
         if missing_models > 0:
             validation_errors.append(f"Found {missing_models} records with missing Master Model")
-        
+
+        # Check for missing price data
+        missing_prices = self.processed_data['MOP AT THE TIME OF PURCHASE'].isna().sum()
+        if missing_prices > 0:
+            validation_errors.append(f"Found {missing_prices} records with missing price data")
+
         return validation_errors

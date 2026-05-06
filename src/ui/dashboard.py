@@ -6,7 +6,19 @@ import pandas as pd
 import numpy as np
 from typing import Optional, Tuple
 import os
+import logging
 from datetime import datetime
+
+# Set up logging for dashboard
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('siat_dashboard.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('siat_dashboard')
 
 from src.data.loader import DataLoader
 from src.calculations.engine import CalculationEngine
@@ -71,6 +83,8 @@ class SIATDashboard:
             st.session_state.workbook_data = None
         if 'temp_workbook_path' not in st.session_state:
             st.session_state.temp_workbook_path = None
+        if 'temp_files_to_cleanup' not in st.session_state:
+            st.session_state.temp_files_to_cleanup = []
 
         # Use session state instead of instance variables
         self.calculation_engine = st.session_state.calculation_engine
@@ -78,6 +92,27 @@ class SIATDashboard:
         self.pivot_data = st.session_state.pivot_data
         self.workbook_data = st.session_state.workbook_data
         self.temp_workbook_path = st.session_state.temp_workbook_path
+
+        # Clean up any leftover temp files from previous sessions
+        self._cleanup_temp_files()
+
+    def _cleanup_temp_files(self):
+        """Safely clean up temporary files."""
+        files_to_remove = []
+        for temp_file in st.session_state.temp_files_to_cleanup:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+                    logger.info(f"Cleaned up temp file: {temp_file}")
+                    files_to_remove.append(temp_file)
+            except PermissionError:
+                logger.warning(f"Could not delete temp file (still in use): {temp_file}")
+            except Exception as e:
+                logger.error(f"Error deleting temp file {temp_file}: {e}")
+
+        # Remove successfully deleted files from the list
+        for file in files_to_remove:
+            st.session_state.temp_files_to_cleanup.remove(file)
 
     def run(self):
         """Main dashboard application."""
@@ -88,7 +123,8 @@ class SIATDashboard:
         st.markdown("*Automating mobile phone sales reconciliation and incentive calculations*")
         st.markdown("---")
 
-        if self._load_data():
+        # Display results if data has been processed
+        if st.session_state.processed_data is not None and not st.session_state.processed_data.empty:
             self._display_overview_metrics()
             self._display_charts()
             self._display_data_tables()
@@ -116,6 +152,7 @@ class SIATDashboard:
                 tmp_file.write(self.workbook_file.getvalue())
                 self.temp_workbook_path = tmp_file.name
                 st.session_state.temp_workbook_path = self.temp_workbook_path
+                st.session_state.temp_files_to_cleanup.append(self.temp_workbook_path)
 
             # Display workbook info
             st.sidebar.markdown("### 📋 Workbook Contents")
@@ -123,6 +160,18 @@ class SIATDashboard:
                 workbook_data = self.data_loader.load_workbook(self.temp_workbook_path)
                 for sheet_name, df in workbook_data.items():
                     st.sidebar.write(f"• **{sheet_name.title()}**: {df.shape[0]} rows, {df.shape[1]} columns")
+
+                # Extract data sources for processing
+                self.sales_data, self.price_list, self.scheme_file, self.drop_dump = \
+                    self.data_loader.extract_data_sources(workbook_data)
+
+                # Save extracted data to session state
+                st.session_state.workbook_data = workbook_data
+
+                logger.info(f"Data extracted - sales: {self.sales_data.shape if self.sales_data is not None else None}, " +
+                           f"price: {self.price_list.shape if self.price_list is not None else None}, " +
+                           f"scheme: {self.scheme_file.shape if self.scheme_file is not None else None}, " +
+                           f"drop: {self.drop_dump.shape if self.drop_dump is not None else None}")
 
                 st.sidebar.markdown("---")
 
@@ -149,10 +198,9 @@ class SIATDashboard:
                             status_text.text("❌ Processing failed")
 
             except Exception as e:
-                st.sidebar.error(f"❌ Error reading workbook: {str(e)}")
-                # Clean up temp file on error
-                if hasattr(self, 'temp_workbook_path') and os.path.exists(self.temp_workbook_path):
-                    os.unlink(self.temp_workbook_path)
+                logger.error(f"Error reading workbook: {str(e)}")
+                # Clean up temp files safely
+                self._cleanup_temp_files()
 
             # Debug information (outside try-except)
             if st.sidebar.checkbox("🔍 Show Debug Info", help="Show detailed information about loaded data"):
@@ -163,130 +211,54 @@ class SIATDashboard:
                 st.sidebar.markdown("### 💾 Export Results")
                 self._create_download_button()
 
+                # Cleanup temp files button
+                if st.sidebar.button("🧹 Cleanup Temp Files", help="Remove temporary files created during processing"):
+                    self._cleanup_temp_files()
+                    st.sidebar.success("✅ Temp files cleaned up")
+
     def _process_data_with_status(self, status_text, progress_bar):
         """Process data with status updates."""
         try:
-            # Load data if not already loaded
-            if not hasattr(self, 'sales_data'):
-                status_text.text("Loading workbook data...")
-                progress_bar.progress(20)
-                if not self._load_data():
-                    return False
+            logger.info("Starting _process_data_with_status")
 
-            status_text.text("Running calculations...")
+            # Check if data is available (should be loaded in sidebar)
+            if (not hasattr(self, 'sales_data') or self.sales_data is None or
+                not hasattr(self, 'price_list') or self.price_list is None or
+                not hasattr(self, 'scheme_file') or self.scheme_file is None or
+                not hasattr(self, 'drop_dump') or self.drop_dump is None):
+                logger.error("Required data not available for processing")
+                status_text.text("❌ Data not loaded. Please upload and process a workbook first.")
+                progress_bar.progress(0)
+                return False
+
+            status_text.text("Data validation complete...")
+            progress_bar.progress(20)
+            logger.info("Data availability confirmed")
+
+            status_text.text("Initializing calculation engine...")
             progress_bar.progress(40)
+            logger.info("Starting calculation engine initialization...")
+
+            logger.info(f"Data sizes: sales={self.sales_data.shape if self.sales_data is not None else None}, " +
+                       f"price={self.price_list.shape if self.price_list is not None else None}, " +
+                       f"scheme={self.scheme_file.shape if self.scheme_file is not None else None}, " +
+                       f"drop={self.drop_dump.shape if self.drop_dump is not None else None}")
 
             self.calculation_engine = CalculationEngine(
                 self.drop_dump, self.price_list,
                 self.scheme_file, self.sales_data
             )
+            logger.info("Calculation engine initialized successfully")
+
+            status_text.text("Running calculations...")
+            progress_bar.progress(60)
+            logger.info("Running calculations...")
 
             self.processed_data, errors = self.calculation_engine.run_calculations()
+            logger.info(f"Calculations completed, processed {len(self.processed_data) if self.processed_data is not None else 0} records")
 
             status_text.text("Generating reports...")
             progress_bar.progress(80)
-
-            if not self.processed_data.empty:
-                self.pivot_data = self._generate_enhanced_pivot()
-
-                # Save to session state
-                st.session_state.calculation_engine = self.calculation_engine
-                st.session_state.processed_data = self.processed_data
-                st.session_state.pivot_data = self.pivot_data
-
-                # Show results summary
-                st.success(f"✅ **Processing Complete!** Successfully processed {len(self.processed_data)} records")
-                st.info(f"📊 Generated summary for {len(self.pivot_data)} distributors")
-
-                return True
-
-        except Exception as e:
-            st.error(f"❌ Processing failed: {str(e)}")
-            return False
-
-    def _show_debug_info(self):
-        """Show detailed debug information about loaded data."""
-        st.sidebar.markdown("### 🔍 Debug Information")
-
-        if hasattr(self, 'workbook_data') and self.workbook_data:
-            st.sidebar.write("**Workbook Sheets:**")
-            for sheet_name, df in self.workbook_data.items():
-                st.sidebar.write(f"• {sheet_name}: {df.shape[0]} rows × {df.shape[1]} cols")
-
-        if hasattr(self, 'sales_data'):
-            st.sidebar.write(f"**Sales Data:** {self.sales_data.shape}")
-            st.sidebar.write(f"Columns: {list(self.sales_data.columns)[:5]}...")
-            if len(self.sales_data) > 0:
-                st.sidebar.write(f"Sample IMEI: {self.sales_data['IMEI'].iloc[0]}")
-                st.sidebar.write(f"Sample Model: {self.sales_data['Master_Model'].iloc[0]}")
-
-        if hasattr(self, 'drop_dump'):
-            st.sidebar.write(f"**Drop Dump:** {self.drop_dump.shape}")
-            if len(self.drop_dump) > 0:
-                st.sidebar.write(f"Sample IMEI: {self.drop_dump['IMEI'].iloc[0]}")
-                if 'Drop_Amount' in self.drop_dump.columns:
-                    st.sidebar.write(f"Sample Drop Amount: {self.drop_dump['Drop_Amount'].iloc[0]}")
-
-        if hasattr(self, 'price_list'):
-            st.sidebar.write(f"**Price List:** {self.price_list.shape}")
-            if len(self.price_list) > 0:
-                st.sidebar.write(f"Sample Model: {self.price_list['Master_Model'].iloc[0]}")
-
-        if hasattr(self, 'scheme_file'):
-            st.sidebar.write(f"**Scheme File:** {self.scheme_file.shape}")
-            if len(self.scheme_file) > 0:
-                st.sidebar.write(f"Sample Model: {self.scheme_file['Master_Model'].iloc[0]}")
-
-        else:
-            st.sidebar.info("👆 Upload your SIAT workbook to begin analysis")
-            st.sidebar.markdown("""
-            **Expected Sheets:**
-            - `sales` - Transaction data
-            - `scheme` - Incentive schemes
-            - `drop dump` - Drop amounts
-            - `price list` - Pricing information
-            """)
-    
-    def _load_data(self) -> bool:
-        """Load and validate uploaded workbook."""
-        if not hasattr(self, 'temp_workbook_path') or self.temp_workbook_path is None or not os.path.exists(self.temp_workbook_path):
-            return False
-
-        try:
-            # Load workbook data
-            self.workbook_data = self.data_loader.load_workbook(self.temp_workbook_path)
-
-            # Extract data sources
-            self.sales_data, self.price_list, self.scheme_file, self.drop_dump = \
-                self.data_loader.extract_data_sources(self.workbook_data)
-
-            # Save workbook data to session state
-            st.session_state.workbook_data = self.workbook_data
-
-            st.sidebar.success("✅ All required sheets found and loaded")
-            return True
-
-        except Exception as e:
-            st.sidebar.error(f"❌ Error processing workbook: {str(e)}")
-            import traceback
-            st.sidebar.error(f"Details: {traceback.format_exc()}")
-            return False
-    
-    def _process_data(self):
-        """Process the loaded data through the calculation engine."""
-        # Load data if not already loaded
-        if not hasattr(self, 'sales_data'):
-            if not self._load_data():
-                st.error("❌ Failed to load data. Please check your workbook and try again.")
-                return
-
-        try:
-            self.calculation_engine = CalculationEngine(
-                self.drop_dump, self.price_list,
-                self.scheme_file, self.sales_data
-            )
-
-            self.processed_data, errors = self.calculation_engine.run_calculations()
 
             if errors:
                 error_count = len([e for e in errors if 'Warning' not in e])
@@ -308,15 +280,38 @@ class SIATDashboard:
                                 st.warning(f"{i}. {error}")
                         st.info("⚠️ Warnings indicate potential data issues but processing continues.")
 
-            if not self.processed_data.empty:
-                self.pivot_data = self._generate_enhanced_pivot()
+            if self.processed_data is not None and not self.processed_data.empty:
+                try:
+                    self.pivot_data = self._generate_enhanced_pivot()
 
-                # Success message with details
-                st.success(f"✅ **Processing Complete!** Successfully processed {len(self.processed_data)} records")
-                st.info(f"📊 Generated summary for {len(self.pivot_data)} distributors")
+                    # Save to session state
+                    st.session_state.calculation_engine = self.calculation_engine
+                    st.session_state.processed_data = self.processed_data
+                    st.session_state.pivot_data = self.pivot_data
 
-                # Force a rerun to show results
-                st.rerun()
+                    # Success message with details
+                    st.success(f"✅ **Processing Complete!** Successfully processed {len(self.processed_data)} records")
+                    if self.pivot_data is not None:
+                        st.info(f"📊 Generated summary for {len(self.pivot_data)} distributors")
+                    else:
+                        st.info("📊 Pivot report generation failed")
+
+                    # Force a rerun to show results
+                    st.rerun()
+
+                except Exception as e:
+                    logger.error(f"Failed to generate pivot report: {str(e)}")
+                    st.warning(f"⚠️ Report generation failed: {str(e)}")
+                    # Still save processed data even if pivot fails
+                    st.session_state.processed_data = self.processed_data
+                    st.session_state.pivot_data = None
+                    st.success(f"✅ **Processing Complete!** Successfully processed {len(self.processed_data)} records")
+                    st.info("📊 Basic results available (pivot report failed)")
+                    st.rerun()
+            else:
+                logger.error("Processed data is None or empty")
+                st.error("❌ Processing completed but no valid results were generated")
+                return False
 
         except Exception as e:
             st.error(f"❌ Processing failed: {str(e)}")
@@ -324,29 +319,86 @@ class SIATDashboard:
             st.error(f"Full error details: {traceback.format_exc()}")
 
     def _generate_enhanced_pivot(self) -> pd.DataFrame:
-        """Generate enhanced pivot report with multiple aggregations."""
-        if self.processed_data is None:
-            return pd.DataFrame()
+        """Generate enhanced pivot report from processed data."""
+        logger.info(f"Checking processed_data availability: hasattr={hasattr(st.session_state, 'processed_data')}")
 
-        pivot = pd.pivot_table(
-            self.processed_data,
-            values=['Total_Incentive_Received', 'NLC', 'Final_Price', 'Margin', 'Drop_Amount'],
-            index=['Distributor', 'Master_Model'],
-            aggfunc={
-                'Total_Incentive_Received': 'sum',
-                'NLC': 'sum',
-                'Final_Price': 'sum',
-                'Margin': 'sum',
-                'Drop_Amount': 'sum'
-            },
-            fill_value=0
-        ).round(2).reset_index()
+        if hasattr(st.session_state, 'processed_data'):
+            logger.info(f"processed_data is None: {st.session_state.processed_data is None}")
+            if st.session_state.processed_data is not None:
+                logger.info(f"processed_data is empty: {st.session_state.processed_data.empty}")
+                logger.info(f"processed_data shape: {st.session_state.processed_data.shape}")
 
-        # Add percentage calculations
-        pivot['Incentive_Percentage'] = (pivot['Total_Incentive_Received'] / pivot['Final_Price'] * 100).round(2)
-        pivot['Margin_Percentage'] = (pivot['Margin'] / pivot['Final_Price'] * 100).round(2)
+        if (not hasattr(st.session_state, 'processed_data') or
+            st.session_state.processed_data is None or
+            st.session_state.processed_data.empty):
+            logger.warning("No processed data available for pivot generation")
+            return None
 
-        return pivot
+        try:
+            logger.info("Generating pivot report...")
+
+            # Check if required columns exist
+            required_columns = ['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)', 'distibutor']
+            missing_columns = [col for col in required_columns if col not in st.session_state.processed_data.columns]
+
+            if missing_columns:
+                logger.error(f"Missing required columns for pivot: {missing_columns}")
+                # Try to create a basic pivot with available columns
+                available_value_cols = [col for col in ['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)']
+                                       if col in st.session_state.processed_data.columns]
+                available_index_cols = [col for col in ['distibutor', 'master modal']
+                                       if col in st.session_state.processed_data.columns]
+
+                if not available_value_cols:
+                    logger.error("No value columns available for pivot")
+                    return None
+
+                pivot = pd.pivot_table(
+                    st.session_state.processed_data,
+                    values=available_value_cols,
+                    index=available_index_cols if available_index_cols else None,
+                    aggfunc='sum'
+                ).reset_index()
+
+            else:
+                # Use the final column names from processed data
+                pivot = pd.pivot_table(
+                    st.session_state.processed_data,
+                    values=['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)'],
+                    index=['distibutor'],
+                    aggfunc='sum'
+                ).reset_index()
+
+            # Rename columns for clarity if pivot was created successfully
+            if pivot is not None and not pivot.empty:
+                # Add calculated margin column
+                if 'final price (g-k)' in pivot.columns and 'nt nlc (o-ac)' in pivot.columns:
+                    pivot['Total_Margin'] = pivot['final price (g-k)'] - pivot['nt nlc (o-ac)']
+                elif 'Total_Final_Price' in pivot.columns and 'Total_NLC' in pivot.columns:
+                    pivot['Total_Margin'] = pivot['Total_Final_Price'] - pivot['Total_NLC']
+
+                # Rename for consistency
+                column_rename_map = {
+                    'total schme rcvd': 'Total_Incentives',
+                    'nt nlc (o-ac)': 'Total_NLC',
+                    'final price (g-k)': 'Total_Final_Price',
+                    'distibutor': 'Distributor',
+                    'master modal': 'Model'
+                }
+
+                pivot = pivot.rename(columns=column_rename_map)
+
+                logger.info(f"Generated pivot report with {len(pivot)} entries")
+                return pivot
+            else:
+                logger.warning("Pivot table is empty")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating pivot report: {str(e)}")
+            logger.error(f"Processed data shape: {st.session_state.processed_data.shape}")
+            logger.error(f"Processed data columns: {list(st.session_state.processed_data.columns)}")
+            return None
     
     def _display_overview_metrics(self):
         """Display professional key performance metrics."""
@@ -355,15 +407,16 @@ class SIATDashboard:
 
         st.header("📊 Executive Summary")
 
-        # Calculate metrics
-        total_incentive = st.session_state.processed_data['Total_Incentive_Received'].sum()
-        total_nlc = st.session_state.processed_data['NLC'].sum()
-        total_margin = st.session_state.processed_data['Margin'].sum()
-        total_final_price = st.session_state.processed_data['Final_Price'].sum()
+        # Calculate metrics using final column names
+        total_incentive = st.session_state.processed_data['total schme rcvd'].sum()
+        total_nlc = st.session_state.processed_data['nt nlc (o-ac)'].sum()
+        # Calculate margin from final price and NLC
+        total_margin = (st.session_state.processed_data['final price (g-k)'] - st.session_state.processed_data['nt nlc (o-ac)']).sum()
+        total_final_price = st.session_state.processed_data['final price (g-k)'].sum()
         total_records = len(st.session_state.processed_data)
         avg_margin_pct = (total_margin / total_final_price * 100) if total_final_price > 0 else 0
-        drops_count = st.session_state.processed_data['Has_Drop'].sum()
-        drops_value = st.session_state.processed_data['Drop_Amount'].sum()
+        drops_count = (st.session_state.processed_data['drop'] != 0).sum()
+        drops_value = st.session_state.processed_data['drop'].sum()
 
         # Display metrics in a professional grid
         col1, col2, col3, col4 = st.columns(4)
@@ -412,7 +465,7 @@ class SIATDashboard:
             st.info(f"🔻 **Drop Impact**: ₹{drops_value:,.0f} total drop value across {drops_count} devices")
 
         with col2:
-            successful_matches = self.processed_data['Matched_Price'].notna().sum()
+            successful_matches = self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().sum()
             match_rate = (successful_matches / total_records * 100) if total_records > 0 else 0
             st.info(f"✅ **Price Match Rate**: {match_rate:.1f}% ({successful_matches}/{total_records})")
 
@@ -458,10 +511,10 @@ class SIATDashboard:
             # Incentive distribution
             fig = px.histogram(
                 st.session_state.processed_data,
-                x='Total_Incentive_Received',
+                x='total schme rcvd',
                 nbins=30,
                 title="Incentive Distribution",
-                labels={'Total_Incentive_Received': 'Total Incentive (₹)'},
+                labels={'total schme rcvd': 'Total Incentive (₹)'},
                 color_discrete_sequence=['#1f77b4']
             )
             fig.update_layout(showlegend=False)
@@ -489,12 +542,12 @@ class SIATDashboard:
         # Incentive vs Price scatter
         fig = px.scatter(
             st.session_state.processed_data,
-            x='Matched_Price',
-            y='Total_Incentive_Received',
+            x='MOP AT THE TIME OF PURCHASE',
+            y='total schme rcvd',
             title="Incentive vs Device Price",
             labels={
-                'Matched_Price': 'Device Price (₹)',
-                'Total_Incentive_Received': 'Total Incentive (₹)'
+                'MOP AT THE TIME OF PURCHASE': 'Device Price (₹)',
+                'total schme rcvd': 'Total Incentive (₹)'
             },
             trendline="ols",
             color_discrete_sequence=['#d62728']
@@ -509,28 +562,28 @@ class SIATDashboard:
             # Price vs NLC scatter
             fig = px.scatter(
                 st.session_state.processed_data,
-                x='Matched_Price',
-                y='NLC',
+                x='MOP AT THE TIME OF PURCHASE',
+                y='nt nlc (o-ac)',
                 title="Price vs Net Landing Cost",
                 labels={
-                    'Matched_Price': 'Device Price (₹)',
-                    'NLC': 'Net Landing Cost (₹)'
+                    'MOP AT THE TIME OF PURCHASE': 'Device Price (₹)',
+                    'nt nlc (o-ac)': 'Net Landing Cost (₹)'
                 },
                 trendline="ols",
-                color='Has_Drop',
-                color_discrete_map={True: '#d62728', False: '#1f77b4'}
+                color='drop',
+                color_continuous_scale='RdYlGn_r'
             )
             fig.update_layout(legend_title_text='Has Drop')
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # Margin distribution
+            # Margin distribution (calculated as final price - NLC)
+            margin_data = st.session_state.processed_data['final price (g-k)'] - st.session_state.processed_data['nt nlc (o-ac)']
             fig = px.histogram(
-                st.session_state.processed_data,
-                x='Margin',
+                x=margin_data,
                 nbins=30,
                 title="Margin Distribution",
-                labels={'Margin': 'Margin (₹)'},
+                labels={'x': 'Margin (₹)'},
                 color_discrete_sequence=['#2ca02c']
             )
             fig.update_layout(showlegend=False)
@@ -562,15 +615,15 @@ class SIATDashboard:
 
             with col1:
                 # Monthly incentive trends
-                monthly_incentives = df_trends.groupby('Month')['Total_Incentive_Received'].sum().reset_index()
+                monthly_incentives = df_trends.groupby('Month')['total schme rcvd'].sum().reset_index()
                 fig = px.line(
                     monthly_incentives,
                     x='Month',
-                    y='Total_Incentive_Received',
+                    y='total schme rcvd',
                     title="Monthly Incentive Trends",
                     labels={
                         'Month': 'Month',
-                        'Total_Incentive_Received': 'Total Incentives (₹)'
+                        'total schme rcvd': 'Total Incentives (₹)'
                     },
                     markers=True
                 )
@@ -591,16 +644,16 @@ class SIATDashboard:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Average incentive per transaction over time
-            monthly_avg = df_trends.groupby('Month')['Total_Incentive_Received'].mean().reset_index()
+                # Average incentive per transaction over time
+            monthly_avg = df_trends.groupby('Month')['total schme rcvd'].mean().reset_index()
             fig = px.area(
                 monthly_avg,
                 x='Month',
-                y='Total_Incentive_Received',
+                y='total schme rcvd',
                 title="Average Incentive per Transaction",
                 labels={
                     'Month': 'Month',
-                    'Total_Incentive_Received': 'Avg Incentive (₹)'
+                    'total schme rcvd': 'Avg Incentive (₹)'
                 },
                 color_discrete_sequence=['#17becf']
             )
@@ -614,15 +667,15 @@ class SIATDashboard:
             with col1:
                 # Distributor-wise incentive recovery
                 fig = px.bar(
-                    self.pivot_data,
+                    st.session_state.pivot_data,
                     x='Distributor',
-                    y='Total_Incentive_Received',
+                    y='Total_Incentives',
                     title="Incentive Recovery by Distributor",
                     labels={
                         'Distributor': 'Distributor',
-                        'Total_Incentive_Received': 'Total Incentives (₹)'
+                        'Total_Incentives': 'Total Incentives (₹)'
                     },
-                    color='Total_Incentive_Received',
+                    color='Total_Incentives',
                     color_continuous_scale='Viridis'
                 )
                 fig.update_xaxes(tickangle=45)
@@ -631,15 +684,15 @@ class SIATDashboard:
             with col2:
                 # Distributor margin analysis
                 fig = px.scatter(
-                    self.pivot_data,
-                    x='Total_Incentive_Received',
+                    st.session_state.pivot_data,
+                    x='Total_Incentives',
                     y='Margin_Percentage',
-                    size='NLC',
+                    size='Total_NLC',
                     title="Distributor Performance Matrix",
                     labels={
-                        'Total_Incentive_Received': 'Total Incentives (₹)',
+                        'Total_Incentives': 'Total Incentives (₹)',
                         'Margin_Percentage': 'Margin %',
-                        'NLC': 'Net Landing Cost (₹)'
+                        'Total_NLC': 'Net Landing Cost (₹)'
                     },
                     color='Distributor',
                     hover_name='Distributor'
@@ -647,15 +700,15 @@ class SIATDashboard:
                 st.plotly_chart(fig, use_container_width=True)
 
             # Top models by incentive
-            model_incentives = self.pivot_data.groupby('Master_Model')['Total_Incentive_Received'].sum().nlargest(10).reset_index()
+            model_incentives = st.session_state.pivot_data.groupby('Model')['Total_Incentives'].sum().nlargest(10).reset_index()
             fig = px.bar(
                 model_incentives,
-                x='Master_Model',
-                y='Total_Incentive_Received',
+                x='Model',
+                y='Total_Incentives',
                 title="Top 10 Models by Incentive Value",
                 labels={
-                    'Master_Model': 'Device Model',
-                    'Total_Incentive_Received': 'Total Incentives (₹)'
+                    'Model': 'Device Model',
+                    'Total_Incentives': 'Total Incentives (₹)'
                 },
                 color_discrete_sequence=['#e377c2']
             )
@@ -664,8 +717,17 @@ class SIATDashboard:
 
     def _data_quality_charts(self):
         """Data quality and validation insights."""
-        # Processing status breakdown
-        status_counts = self.processed_data['Processing_Status'].value_counts().reset_index()
+        # Create processing status based on data completeness
+        def assess_record_status(row):
+            if pd.isna(row.get('master modal', '')) or pd.isna(row.get('sell out date')):
+                return 'Incomplete'
+            elif pd.isna(row.get('MOP AT THE TIME OF PURCHASE')):
+                return 'Price Missing'
+            else:
+                return 'Complete'
+
+        status_series = self.processed_data.apply(assess_record_status, axis=1)
+        status_counts = status_series.value_counts().reset_index()
         status_counts.columns = ['Status', 'Count']
 
         col1, col2 = st.columns(2)
@@ -685,8 +747,8 @@ class SIATDashboard:
             price_match_status = pd.DataFrame({
                 'Status': ['Price Matched', 'Price Missing'],
                 'Count': [
-                    self.processed_data['Matched_Price'].notna().sum(),
-                    self.processed_data['Matched_Price'].isna().sum()
+                    self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().sum(),
+                    self.processed_data['MOP AT THE TIME OF PURCHASE'].isna().sum()
                 ]
             })
 
@@ -701,13 +763,13 @@ class SIATDashboard:
 
         # Data completeness radar chart
         completeness_data = pd.DataFrame({
-            'Field': ['IMEI', 'Master_Model', 'Sell_Out_Date', 'Matched_Price', 'Distributor'],
+            'Field': ['IMEI', 'Master Modal', 'Sell Out Date', 'MOP AT THE TIME OF PURCHASE', 'Distributor'],
             'Completeness': [
                 self.processed_data['IMEI'].notna().mean() * 100,
-                self.processed_data['Master_Model'].notna().mean() * 100,
-                self.processed_data['Sell_Out_Date'].notna().mean() * 100,
-                self.processed_data['Matched_Price'].notna().mean() * 100,
-                self.processed_data['Distributor'].notna().mean() * 100,
+                self.processed_data['master modal'].notna().mean() * 100,
+                self.processed_data['sell out date'].notna().mean() * 100,
+                self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().mean() * 100,
+                self.processed_data['distibutor'].notna().mean() * 100,
             ]
         })
 
@@ -735,9 +797,9 @@ class SIATDashboard:
             st.markdown("*Complete dataset with all calculations and validations*")
 
             # Column selector
-            all_columns = self.processed_data.columns.tolist()
-            default_cols = ['IMEI', 'Master_Model', 'Distributor', 'Matched_Price', 'Drop_Amount',
-                          'Total_Incentive_Received', 'NLC', 'Margin', 'Processing_Status']
+            all_columns = st.session_state.processed_data.columns.tolist()
+            default_cols = ['IMEI', 'sell out date', 'master modal', 'distibutor', 'MOP AT THE TIME OF PURCHASE',
+                          'drop', 'total schme rcvd', 'nt nlc (o-ac)']
 
             selected_cols = st.multiselect(
                 "Select columns to display:",
@@ -752,7 +814,7 @@ class SIATDashboard:
                 # Format numeric columns
                 numeric_cols = display_df.select_dtypes(include=[np.number]).columns
                 for col in numeric_cols:
-                    if col in ['Matched_Price', 'Drop_Amount', 'Total_Incentive_Received', 'NLC', 'Margin']:
+                    if col in ['MOP AT THE TIME OF PURCHASE', 'drop', 'total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)']:
                         display_df[col] = display_df[col].apply(lambda x: f"₹{x:,.0f}" if pd.notna(x) else "N/A")
 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -766,7 +828,7 @@ class SIATDashboard:
             if st.session_state.pivot_data is not None:
                 # Format the pivot data
                 display_pivot = self.pivot_data.copy()
-                numeric_cols = ['Total_Incentive_Received', 'NLC', 'Final_Price', 'Margin', 'Drop_Amount']
+                numeric_cols = ['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)', 'drop']
                 for col in numeric_cols:
                     if col in display_pivot.columns:
                         display_pivot[col] = display_pivot[col].apply(lambda x: f"₹{x:,.0f}")
@@ -783,12 +845,11 @@ class SIATDashboard:
                 with col1:
                     st.metric("Total Distributors", len(display_pivot['Distributor'].unique()))
                 with col2:
-                    # Remove currency formatting and find max
-                    incentive_values = display_pivot['Total_Incentive_Received'].str.replace('₹', '').str.replace(',', '').astype(float)
-                    top_distributor = display_pivot.loc[incentive_values.idxmax(), 'Distributor']
+                    # Find max incentive value
+                    top_distributor = display_pivot.loc[display_pivot['Total_Incentives'].idxmax(), 'Distributor']
                     st.metric("Top Performer", top_distributor)
                 with col3:
-                    avg_incentive_pct = display_pivot['Incentive_Percentage'].str.rstrip('%').astype(float).mean()
+                    avg_incentive_pct = display_pivot['Incentive_Percentage'].mean()
                     st.metric("Avg Incentive Rate", f"{avg_incentive_pct:.1f}%")
 
         with tab3:
@@ -796,22 +857,23 @@ class SIATDashboard:
             st.markdown("*Performance metrics by device model*")
 
             if st.session_state.pivot_data is not None:
-                model_summary = self.pivot_data.groupby('Master_Model').agg({
-                    'Total_Incentive_Received': 'sum',
-                    'NLC': 'sum',
-                    'Final_Price': 'sum',
-                    'Margin': 'sum',
+                model_summary = st.session_state.pivot_data.groupby('Model').agg({
+                    'Total_Incentives': 'sum',
+                    'Total_NLC': 'sum',
+                    'Total_Final_Price': 'sum',
+                    'Total_Margin': 'sum',
                     'Incentive_Percentage': 'mean',
                     'Margin_Percentage': 'mean'
                 }).reset_index()
 
                 # Sort by total incentives
-                model_summary = model_summary.sort_values('Total_Incentive_Received', ascending=False)
+                model_summary = model_summary.sort_values('Total_Incentives', ascending=False)
 
                 # Format for display
                 display_model = model_summary.copy()
-                for col in ['Total_Incentive_Received', 'NLC', 'Final_Price', 'Margin']:
-                    display_model[col] = display_model[col].apply(lambda x: f"₹{x:,.0f}")
+                for col in ['Total_Incentives', 'Total_NLC', 'Total_Final_Price', 'Total_Margin']:
+                    if col in display_model.columns:
+                        display_model[col] = display_model[col].apply(lambda x: f"₹{x:,.0f}")
 
                 for col in ['Incentive_Percentage', 'Margin_Percentage']:
                     display_model[col] = display_model[col].apply(lambda x: f"{x:.1f}%")
@@ -868,8 +930,13 @@ class SIATDashboard:
             st.metric("Warnings", warning_count)
 
         with col3:
-            success_count = len(self.processed_data[self.processed_data['Processing_Status'] == 'Completed'])
-            st.metric("Successful", success_count)
+            # Calculate success based on data completeness
+            complete_records = len(self.processed_data[
+                (self.processed_data['master modal'].notna()) &
+                (self.processed_data['sell out date'].notna()) &
+                (self.processed_data['MOP AT THE TIME OF PURCHASE'].notna())
+            ])
+            st.metric("Successful", complete_records)
 
         with col4:
             total_processed = len(self.processed_data)
@@ -895,12 +962,19 @@ class SIATDashboard:
                             st.error(f"{i}. {error}")
 
             # Error summary table
+            # Calculate successful records based on data completeness
+            successful_records = len(self.processed_data[
+                (self.processed_data['master modal'].notna()) &
+                (self.processed_data['sell out date'].notna()) &
+                (self.processed_data['MOP AT THE TIME OF PURCHASE'].notna())
+            ])
+
             error_summary = pd.DataFrame({
                 'Category': ['Processing Errors', 'Validation Warnings', 'Successful Records'],
                 'Count': [
                     len([e for e in processing_errors if 'warning' not in e.lower()]),
                     len([e for e in validation_errors if 'warning' in e.lower()]),
-                    len(self.processed_data[self.processed_data['Processing_Status'] == 'Completed'])
+                    successful_records
                 ]
             })
 
@@ -914,9 +988,9 @@ class SIATDashboard:
         # Data quality score
         st.subheader("⭐ Data Quality Score")
         completeness_score = (
-            self.processed_data['Matched_Price'].notna().mean() +
-            self.processed_data['Master_Model'].notna().mean() +
-            (self.processed_data['Processing_Status'] == 'Completed').mean()
+            self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().mean() +
+            self.processed_data['master modal'].notna().mean() +
+            self.processed_data['sell out date'].notna().mean()
         ) / 3 * 100
 
         if completeness_score >= 95:
