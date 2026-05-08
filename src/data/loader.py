@@ -35,7 +35,23 @@ class DataLoader:
                     if sheet_name.lower() == 'drop dump':
                         # Drop dump has headers on row 0
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=0)
-                    elif sheet_name.lower() in ['sales', 'scheme', 'price list']:
+                    elif sheet_name.lower() == 'scheme':
+                        # Scheme sheet: try to detect header row automatically
+                        # Read first few rows to find where actual data starts
+                        temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
+                        
+                        # Find the row that contains 'Master Model' or 'master model'
+                        header_row = 0
+                        for idx, row in temp_df.iterrows():
+                            row_str = ' '.join([str(val).lower() for val in row if pd.notna(val)])
+                            if 'master model' in row_str or 'master' in row_str:
+                                header_row = idx
+                                break
+                        
+                        # Now load with correct header row
+                        df = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
+                        logger.info(f"Scheme sheet loaded with header at row {header_row}")
+                    elif sheet_name.lower() in ['sales', 'price list']:
                         # These sheets have headers on row 0
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=0)
                     else:
@@ -133,10 +149,14 @@ class DataLoader:
             'sell out date': 'Sell_Out_Date',
             'master modal': 'Master_Model',
             'master_modal': 'Master_Model',
+            'master model': 'Master_Model',
             'distibutor': 'Distributor',
             'distributor': 'Distributor',
             'purchase date': 'Purchase_Date',
             'purchase price': 'Purchase_Price',
+            'bill less in invoice': 'Bill_Less_Invoice',
+            'bill less in invoice ': 'Bill_Less_Invoice',
+            'series': 'SERIES',
             'drop': 'Original_Drop',  # Rename existing drop column to avoid conflicts
         }
 
@@ -181,20 +201,73 @@ class DataLoader:
     @staticmethod
     def _standardize_scheme_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names for scheme file."""
+        # Lowercase all columns first for consistent matching
+        df.columns = df.columns.str.lower().str.strip()
+        
+        logger.info(f"Scheme columns after lowercase: {list(df.columns)}")
+
         column_mapping = {
-            'Master Model': 'Master_Model',
             'master model': 'Master_Model',
-            'Start Date': 'Scheme_Start_Date',
+            'master_model': 'Master_Model',
+            'master': 'Master_Model',
+            'model': 'Master_Model',
+            'start date': 'Scheme_Start_Date',
             'start_date': 'Scheme_Start_Date',
-            'End Date': 'Scheme_End_Date',
+            'scheme start date': 'Scheme_Start_Date',
+            'scheme_start_date': 'Scheme_Start_Date',
+            'start': 'Scheme_Start_Date',
+            'from date': 'Scheme_Start_Date',
+            'end date': 'Scheme_End_Date',
             'end_date': 'Scheme_End_Date',
+            'scheme end date': 'Scheme_End_Date',
+            'scheme_end_date': 'Scheme_End_Date',
+            'end': 'Scheme_End_Date',
+            'to date': 'Scheme_End_Date',
             'pct scheme -1': 'Pct_Scheme_1',
             'pct scheme -2': 'Pct_Scheme_2',
-            'FLAT SCHME': 'Flat_Scheme',
+            'pct scheme -3': 'Pct_Scheme_3',
+            'pct scheme -4': 'Pct_Scheme_4',
+            'flat schme': 'Flat_Scheme',
+            'flat scheme': 'Flat_Scheme',
             'flat_scheme': 'Flat_Scheme',
+            'flat': 'Flat_Scheme',
         }
 
         df = df.rename(columns=column_mapping)
+        
+        logger.info(f"Scheme columns after mapping: {list(df.columns)}")
+        
+        # If still missing required columns, try to find them by pattern matching
+        if 'Master_Model' not in df.columns:
+            for col in df.columns:
+                if 'model' in col.lower() or 'master' in col.lower():
+                    df = df.rename(columns={col: 'Master_Model'})
+                    logger.info(f"Mapped '{col}' to 'Master_Model'")
+                    break
+        
+        if 'Scheme_Start_Date' not in df.columns:
+            for col in df.columns:
+                if 'start' in col.lower() or 'from' in col.lower():
+                    df = df.rename(columns={col: 'Scheme_Start_Date'})
+                    logger.info(f"Mapped '{col}' to 'Scheme_Start_Date'")
+                    break
+        
+        if 'Scheme_End_Date' not in df.columns:
+            for col in df.columns:
+                if 'end' in col.lower() or 'to' in col.lower():
+                    df = df.rename(columns={col: 'Scheme_End_Date'})
+                    logger.info(f"Mapped '{col}' to 'Scheme_End_Date'")
+                    break
+
+        # Convert percentage columns from whole numbers to decimals (e.g., 2.5 -> 0.025)
+        # Store original percentage values for display
+        percentage_columns = ['Pct_Scheme_1', 'Pct_Scheme_2', 'Pct_Scheme_3', 'Pct_Scheme_4']
+        for col in percentage_columns:
+            if col in df.columns:
+                logger.info(f"Scheme column {col} sample value: {df[col].iloc[0] if len(df) > 0 else 'empty'}")
+                # Keep original percentage values, don't convert to decimal
+                # The calculation will handle the conversion
+
         return df
 
     @staticmethod
@@ -252,9 +325,12 @@ class DataLoader:
             # Prepare dataframes for beautiful Excel export
             dataframes = {
                 'Processed Sales Data': processed_data,
-                'Distributor Summary': pivot_data,
                 'Executive Summary': DataLoader._create_summary_sheet(processed_data, pivot_data)
             }
+
+            # Only add distributor summary if pivot_data exists
+            if pivot_data is not None and not pivot_data.empty:
+                dataframes['Distributor Summary'] = pivot_data
 
             # Create beautifully formatted Excel file
             filepath = DataLoader.create_beautiful_excel(dataframes, output_file)
@@ -293,12 +369,15 @@ class DataLoader:
         ])
 
         # Add distributor data
-        for _, row in pivot_data.iterrows():
-            summary.append([
-                row.get('Distributor', 'Unknown'),
-                f"₹{row.get('Total_Incentive_Received', 0):,.0f}",
-                f"{row.get('Margin_Percentage', row.get('Margin', 0)):.1f}%"
-            ])
+        if pivot_data is not None and not pivot_data.empty:
+            for _, row in pivot_data.iterrows():
+                summary.append([
+                    row.get('Distributor', 'Unknown'),
+                    f"₹{row.get('Total_Incentive_Received', 0):,.0f}",
+                    f"{row.get('Margin_Percentage', row.get('Margin', 0)):.1f}%"
+                ])
+        else:
+            summary.append(['No distributor data available', '', ''])
 
         return pd.DataFrame(summary)
 
@@ -424,6 +503,12 @@ class DataLoader:
         from openpyxl.styles import NamedStyle
 
         if pd.isna(value):
+            return
+
+        # IMEI formatting - treat as text, no commas
+        if 'imei' in column_name.lower():
+            cell.value = str(value).replace(',', '')
+            cell.number_format = '@'  # Text format
             return
 
         # Date formatting

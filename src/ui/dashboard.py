@@ -216,6 +216,17 @@ class SIATDashboard:
                     self._cleanup_temp_files()
                     st.sidebar.success("✅ Temp files cleaned up")
 
+    def _show_debug_info(self):
+        """Show debug information about loaded data."""
+        st.sidebar.markdown("### 🔍 Debug Info")
+        for attr, label in [('sales_data', 'Sales'), ('price_list', 'Price List'),
+                             ('scheme_file', 'Scheme'), ('drop_dump', 'Drop Dump')]:
+            df = getattr(self, attr, None)
+            if df is not None:
+                st.sidebar.write(f"**{label}**: {df.shape[0]} rows × {df.shape[1]} cols")
+            else:
+                st.sidebar.write(f"**{label}**: Not loaded")
+
     def _process_data_with_status(self, status_text, progress_bar):
         """Process data with status updates."""
         try:
@@ -343,7 +354,6 @@ class SIATDashboard:
 
             if missing_columns:
                 logger.error(f"Missing required columns for pivot: {missing_columns}")
-                # Try to create a basic pivot with available columns
                 available_value_cols = [col for col in ['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)']
                                        if col in st.session_state.processed_data.columns]
                 available_index_cols = [col for col in ['distibutor', 'master modal']
@@ -369,15 +379,10 @@ class SIATDashboard:
                     aggfunc='sum'
                 ).reset_index()
 
-            # Rename columns for clarity if pivot was created successfully
             if pivot is not None and not pivot.empty:
-                # Add calculated margin column
                 if 'final price (g-k)' in pivot.columns and 'nt nlc (o-ac)' in pivot.columns:
                     pivot['Total_Margin'] = pivot['final price (g-k)'] - pivot['nt nlc (o-ac)']
-                elif 'Total_Final_Price' in pivot.columns and 'Total_NLC' in pivot.columns:
-                    pivot['Total_Margin'] = pivot['Total_Final_Price'] - pivot['Total_NLC']
 
-                # Rename for consistency
                 column_rename_map = {
                     'total schme rcvd': 'Total_Incentives',
                     'nt nlc (o-ac)': 'Total_NLC',
@@ -410,7 +415,6 @@ class SIATDashboard:
         # Calculate metrics using final column names
         total_incentive = st.session_state.processed_data['total schme rcvd'].sum()
         total_nlc = st.session_state.processed_data['nt nlc (o-ac)'].sum()
-        # Calculate margin from final price and NLC
         total_margin = (st.session_state.processed_data['final price (g-k)'] - st.session_state.processed_data['nt nlc (o-ac)']).sum()
         total_final_price = st.session_state.processed_data['final price (g-k)'].sum()
         total_records = len(st.session_state.processed_data)
@@ -465,7 +469,7 @@ class SIATDashboard:
             st.info(f"🔻 **Drop Impact**: ₹{drops_value:,.0f} total drop value across {drops_count} devices")
 
         with col2:
-            successful_matches = self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().sum()
+            successful_matches = st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].notna().sum()
             match_rate = (successful_matches / total_records * 100) if total_records > 0 else 0
             st.info(f"✅ **Price Match Rate**: {match_rate:.1f}% ({successful_matches}/{total_records})")
 
@@ -514,20 +518,33 @@ class SIATDashboard:
                 x='total schme rcvd',
                 nbins=30,
                 title="Incentive Distribution",
-                labels={'total schme rcvd': 'Total Incentive (₹)'},
+                labels={'total schme rcvd': 'Total Incentive'},
                 color_discrete_sequence=['#1f77b4']
             )
             fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # Incentive breakdown by type
+            # Calculate incentive breakdown from available data
+            # Since we don't have Total_Pct_Incentive/Total_Flat_Incentive in final output,
+            # we'll calculate approximate breakdown based on scheme columns
+            pct_incentives = 0
+            flat_incentives = 0
+
+            # Sum all percentage scheme amounts
+            pct_cols = ['amount pct sceme -1', 'amount pct sceme -2', 'amount pct sceme -3', 'amount pct sceme -4']
+            for col in pct_cols:
+                if col in st.session_state.processed_data.columns:
+                    pct_incentives += st.session_state.processed_data[col].sum()
+
+            flat_cols = ['flat payout-1', 'flat payout-2', 'flat payout-3', 'flat payout-4']
+            for col in flat_cols:
+                if col in st.session_state.processed_data.columns:
+                    flat_incentives += st.session_state.processed_data[col].sum()
+
             incentive_breakdown = pd.DataFrame({
                 'Type': ['Percentage Incentives', 'Flat Incentives'],
-                'Amount': [
-                    self.processed_data['Total_Pct_Incentive'].sum(),
-                    self.processed_data['Total_Flat_Incentive'].sum()
-                ]
+                'Amount': [pct_incentives, flat_incentives]
             })
 
             fig = px.pie(
@@ -540,18 +557,18 @@ class SIATDashboard:
             st.plotly_chart(fig, use_container_width=True)
 
         # Incentive vs Price scatter
-        fig = px.scatter(
-            st.session_state.processed_data,
-            x='MOP AT THE TIME OF PURCHASE',
-            y='total schme rcvd',
-            title="Incentive vs Device Price",
-            labels={
-                'MOP AT THE TIME OF PURCHASE': 'Device Price (₹)',
-                'total schme rcvd': 'Total Incentive (₹)'
-            },
-            trendline="ols",
-            color_discrete_sequence=['#d62728']
-        )
+            fig = px.scatter(
+                st.session_state.processed_data,
+                x='MOP AT THE TIME OF PURCHASE',
+                y='total schme rcvd',
+                title="Incentive vs Device Price",
+                labels={
+                    'MOP AT THE TIME OF PURCHASE': 'Device Price',
+                    'total schme rcvd': 'Total Incentive'
+                },
+                trendline="ols",
+                color_discrete_sequence=['#d62728']
+            )
         st.plotly_chart(fig, use_container_width=True)
     
     def _margin_analysis_charts(self):
@@ -607,54 +624,42 @@ class SIATDashboard:
     
     def _performance_trends_charts(self):
         """Performance trends and time-series analysis."""
-        if 'Sell_Out_Date' in self.processed_data.columns:
-            df_trends = self.processed_data.copy()
-            df_trends['Month'] = pd.to_datetime(df_trends['Sell_Out_Date']).dt.to_period('M').dt.to_timestamp()
+        if 'sell out date' in st.session_state.processed_data.columns:
+            df_trends = st.session_state.processed_data.copy()
+            df_trends['Month'] = pd.to_datetime(df_trends['sell out date']).dt.to_period('M').dt.to_timestamp()
 
             col1, col2 = st.columns(2)
 
             with col1:
-                # Monthly incentive trends
                 monthly_incentives = df_trends.groupby('Month')['total schme rcvd'].sum().reset_index()
                 fig = px.line(
-                    monthly_incentives,
-                    x='Month',
-                    y='total schme rcvd',
-                    title="Monthly Incentive Trends",
-                    labels={
-                        'Month': 'Month',
-                        'total schme rcvd': 'Total Incentives (₹)'
-                    },
-                    markers=True
-                )
+                        monthly_incentives,
+                        x='Month',
+                        y='total schme rcvd',
+                        title="Monthly Incentive Trends",
+                        labels={'Month': 'Month', 'total schme rcvd': 'Total Incentives'},
+                        markers=True
+                    )
                 st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                # Monthly transaction volume
                 monthly_volume = df_trends.groupby('Month').size().reset_index(name='Transactions')
                 fig = px.bar(
                     monthly_volume,
                     x='Month',
                     y='Transactions',
                     title="Monthly Transaction Volume",
-                    labels={
-                        'Month': 'Month',
-                        'Transactions': 'Number of Transactions'
-                    }
+                    labels={'Month': 'Month', 'Transactions': 'Number of Transactions'}
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Average incentive per transaction over time
             monthly_avg = df_trends.groupby('Month')['total schme rcvd'].mean().reset_index()
             fig = px.area(
                 monthly_avg,
                 x='Month',
                 y='total schme rcvd',
                 title="Average Incentive per Transaction",
-                labels={
-                    'Month': 'Month',
-                    'total schme rcvd': 'Avg Incentive (₹)'
-                },
+                labels={'Month': 'Month', 'total schme rcvd': 'Avg Incentive'},
                 color_discrete_sequence=['#17becf']
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -665,7 +670,6 @@ class SIATDashboard:
             col1, col2 = st.columns(2)
 
             with col1:
-                # Distributor-wise incentive recovery
                 fig = px.bar(
                     st.session_state.pivot_data,
                     x='Distributor',
@@ -682,17 +686,16 @@ class SIATDashboard:
                 st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                # Distributor margin analysis
                 fig = px.scatter(
                     st.session_state.pivot_data,
                     x='Total_Incentives',
-                    y='Margin_Percentage',
+                    y='Total_Margin',
                     size='Total_NLC',
                     title="Distributor Performance Matrix",
                     labels={
-                        'Total_Incentives': 'Total Incentives (₹)',
-                        'Margin_Percentage': 'Margin %',
-                        'Total_NLC': 'Net Landing Cost (₹)'
+                        'Total_Incentives': 'Total Incentives',
+                        'Total_Margin': 'Total Margin',
+                        'Total_NLC': 'Net Landing Cost'
                     },
                     color='Distributor',
                     hover_name='Distributor'
@@ -747,8 +750,8 @@ class SIATDashboard:
             price_match_status = pd.DataFrame({
                 'Status': ['Price Matched', 'Price Missing'],
                 'Count': [
-                    self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().sum(),
-                    self.processed_data['MOP AT THE TIME OF PURCHASE'].isna().sum()
+                    st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].notna().sum(),
+                    st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].isna().sum()
                 ]
             })
 
@@ -765,11 +768,11 @@ class SIATDashboard:
         completeness_data = pd.DataFrame({
             'Field': ['IMEI', 'Master Modal', 'Sell Out Date', 'MOP AT THE TIME OF PURCHASE', 'Distributor'],
             'Completeness': [
-                self.processed_data['IMEI'].notna().mean() * 100,
-                self.processed_data['master modal'].notna().mean() * 100,
-                self.processed_data['sell out date'].notna().mean() * 100,
-                self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().mean() * 100,
-                self.processed_data['distibutor'].notna().mean() * 100,
+                st.session_state.processed_data['IMEI'].notna().mean() * 100,
+                st.session_state.processed_data['master modal'].notna().mean() * 100,
+                st.session_state.processed_data['sell out date'].notna().mean() * 100,
+                st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].notna().mean() * 100,
+                st.session_state.processed_data['distibutor'].notna().mean() * 100,
             ]
         })
 
@@ -796,10 +799,10 @@ class SIATDashboard:
             st.subheader("Processed Transaction Data")
             st.markdown("*Complete dataset with all calculations and validations*")
 
-            # Column selector
+            # Column selector - include key columns by default
             all_columns = st.session_state.processed_data.columns.tolist()
-            default_cols = ['IMEI', 'sell out date', 'master modal', 'distibutor', 'MOP AT THE TIME OF PURCHASE',
-                          'drop', 'total schme rcvd', 'nt nlc (o-ac)']
+            default_cols = ['IMEI', 'sell out date', 'master modal', 'distibutor', 'purchase date', 'purchase price',
+                          'MOP AT THE TIME OF PURCHASE', 'final price (g-k)', 'drop', 'total schme rcvd', 'nt nlc (o-ac)']
 
             selected_cols = st.multiselect(
                 "Select columns to display:",
@@ -807,6 +810,11 @@ class SIATDashboard:
                 default=[col for col in default_cols if col in all_columns],
                 key="processed_data_cols"
             )
+
+            # Force rerun when selection changes to ensure table updates
+            if selected_cols != st.session_state.get('last_selected_cols', []):
+                st.session_state.last_selected_cols = selected_cols
+                st.rerun()
 
             if selected_cols:
                 display_df = st.session_state.processed_data[selected_cols].copy()
@@ -828,7 +836,7 @@ class SIATDashboard:
             if st.session_state.pivot_data is not None:
                 # Format the pivot data
                 display_pivot = self.pivot_data.copy()
-                numeric_cols = ['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)', 'drop']
+                numeric_cols = ['Total_Incentives', 'Total_NLC', 'Total_Final_Price', 'Total_Margin']
                 for col in numeric_cols:
                     if col in display_pivot.columns:
                         display_pivot[col] = display_pivot[col].apply(lambda x: f"₹{x:,.0f}")
@@ -845,39 +853,27 @@ class SIATDashboard:
                 with col1:
                     st.metric("Total Distributors", len(display_pivot['Distributor'].unique()))
                 with col2:
-                    # Find max incentive value
                     top_distributor = display_pivot.loc[display_pivot['Total_Incentives'].idxmax(), 'Distributor']
                     st.metric("Top Performer", top_distributor)
                 with col3:
-                    avg_incentive_pct = display_pivot['Incentive_Percentage'].mean()
-                    st.metric("Avg Incentive Rate", f"{avg_incentive_pct:.1f}%")
+                    st.metric("Total Incentives", f"{display_pivot['Total_Incentives'].sum():,.0f}")
 
         with tab3:
             st.subheader("Model Performance Analysis")
             st.markdown("*Performance metrics by device model*")
 
             if st.session_state.pivot_data is not None:
-                model_summary = st.session_state.pivot_data.groupby('Model').agg({
+                model_summary = st.session_state.pivot_data.groupby('Distributor').agg({
                     'Total_Incentives': 'sum',
                     'Total_NLC': 'sum',
                     'Total_Final_Price': 'sum',
-                    'Total_Margin': 'sum',
-                    'Incentive_Percentage': 'mean',
-                    'Margin_Percentage': 'mean'
+                    'Total_Margin': 'sum'
                 }).reset_index()
-
-                # Sort by total incentives
                 model_summary = model_summary.sort_values('Total_Incentives', ascending=False)
-
-                # Format for display
                 display_model = model_summary.copy()
                 for col in ['Total_Incentives', 'Total_NLC', 'Total_Final_Price', 'Total_Margin']:
                     if col in display_model.columns:
-                        display_model[col] = display_model[col].apply(lambda x: f"₹{x:,.0f}")
-
-                for col in ['Incentive_Percentage', 'Margin_Percentage']:
-                    display_model[col] = display_model[col].apply(lambda x: f"{x:.1f}%")
-
+                        display_model[col] = display_model[col].apply(lambda x: f"{x:,.0f}")
                 st.dataframe(display_model, use_container_width=True, hide_index=True)
 
     def _create_download_button(self):
@@ -931,15 +927,15 @@ class SIATDashboard:
 
         with col3:
             # Calculate success based on data completeness
-            complete_records = len(self.processed_data[
-                (self.processed_data['master modal'].notna()) &
-                (self.processed_data['sell out date'].notna()) &
-                (self.processed_data['MOP AT THE TIME OF PURCHASE'].notna())
+            complete_records = len(st.session_state.processed_data[
+                (st.session_state.processed_data['master modal'].notna()) &
+                (st.session_state.processed_data['sell out date'].notna()) &
+                (st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].notna())
             ])
             st.metric("Successful", complete_records)
 
         with col4:
-            total_processed = len(self.processed_data)
+            total_processed = len(st.session_state.processed_data)
             st.metric("Total Processed", total_processed)
 
         # Detailed logs
@@ -963,10 +959,10 @@ class SIATDashboard:
 
             # Error summary table
             # Calculate successful records based on data completeness
-            successful_records = len(self.processed_data[
-                (self.processed_data['master modal'].notna()) &
-                (self.processed_data['sell out date'].notna()) &
-                (self.processed_data['MOP AT THE TIME OF PURCHASE'].notna())
+            successful_records = len(st.session_state.processed_data[
+                (st.session_state.processed_data['master modal'].notna()) &
+                (st.session_state.processed_data['sell out date'].notna()) &
+                (st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].notna())
             ])
 
             error_summary = pd.DataFrame({
@@ -988,9 +984,9 @@ class SIATDashboard:
         # Data quality score
         st.subheader("⭐ Data Quality Score")
         completeness_score = (
-            self.processed_data['MOP AT THE TIME OF PURCHASE'].notna().mean() +
-            self.processed_data['master modal'].notna().mean() +
-            self.processed_data['sell out date'].notna().mean()
+            st.session_state.processed_data['MOP AT THE TIME OF PURCHASE'].notna().mean() +
+            st.session_state.processed_data['master modal'].notna().mean() +
+            st.session_state.processed_data['sell out date'].notna().mean()
         ) / 3 * 100
 
         if completeness_score >= 95:
