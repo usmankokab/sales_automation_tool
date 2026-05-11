@@ -67,7 +67,36 @@ class SIATDashboard:
             font-weight: bold;
             margin-bottom: 1rem;
         }
+        /* Hide specific menu items: Deploy button */
+        button[kind="header"] {display: none;}
+        /* Hide Auto Rerun menu item */
+        button[data-testid="stMainMenuItem-autoRerun"] {display: none !important;}
+        footer {visibility: hidden;}
         </style>
+        
+        <script>
+        // Hide Rerun menu item
+        const hideRerunMenuItem = () => {
+            const menuItems = document.querySelectorAll('[data-testid="stMainMenuItem"]');
+            menuItems.forEach(item => {
+                const label = item.querySelector('[data-testid="stMainMenuItemLabel"]');
+                if (label && label.textContent.trim() === 'Rerun') {
+                    item.style.display = 'none';
+                }
+            });
+        };
+        
+        // Run on load and observe for changes
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', hideRerunMenuItem);
+        } else {
+            hideRerunMenuItem();
+        }
+        
+        // Observe for dynamic menu changes
+        const observer = new MutationObserver(hideRerunMenuItem);
+        observer.observe(document.body, { childList: true, subtree: true });
+        </script>
         """, unsafe_allow_html=True)
 
         self.data_loader = DataLoader()
@@ -120,7 +149,7 @@ class SIATDashboard:
 
         # Main content
         st.markdown('<div class="main-header">💰 Sales & Incentive Automation Tool</div>', unsafe_allow_html=True)
-        st.markdown("*Automating mobile phone sales reconciliation and incentive calculations*")
+        st.markdown('<p style="text-align: center; font-style: italic;">Automating mobile phone sales reconciliation and incentive calculations</p>', unsafe_allow_html=True)
         st.markdown("---")
 
         # Display results if data has been processed
@@ -293,7 +322,7 @@ class SIATDashboard:
 
             if self.processed_data is not None and not self.processed_data.empty:
                 try:
-                    self.pivot_data = self._generate_enhanced_pivot()
+                    self.pivot_data = self.calculation_engine.generate_distributor_pivot_report()
 
                     # Save to session state
                     st.session_state.calculation_engine = self.calculation_engine
@@ -303,7 +332,7 @@ class SIATDashboard:
                     # Success message with details
                     st.success(f"✅ **Processing Complete!** Successfully processed {len(self.processed_data)} records")
                     if self.pivot_data is not None:
-                        st.info(f"📊 Generated summary for {len(self.pivot_data)} distributors")
+                        st.info(f"📊 Generated distributor pivot for {len(self.pivot_data)} distributors")
                     else:
                         st.info("📊 Pivot report generation failed")
 
@@ -606,15 +635,19 @@ class SIATDashboard:
             fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Margin percentage by model
-        if self.pivot_data is not None:
+        # Margin percentage by distributor (not model, since pivot is by distributor)
+        if st.session_state.pivot_data is not None and 'Total_Margin' in st.session_state.pivot_data.columns:
+            # Calculate margin percentage
+            pivot_with_pct = st.session_state.pivot_data.copy()
+            pivot_with_pct['Margin_Percentage'] = (pivot_with_pct['Total_Margin'] / pivot_with_pct['Total_Final_Price'] * 100).fillna(0)
+            
             fig = px.bar(
-                self.pivot_data,
-                x='Master_Model',
+                pivot_with_pct,
+                x='Distributor',
                 y='Margin_Percentage',
-                title="Margin Percentage by Model",
+                title="Margin Percentage by Distributor",
                 labels={
-                    'Master_Model': 'Device Model',
+                    'Distributor': 'Distributor',
                     'Margin_Percentage': 'Margin %'
                 },
                 color_discrete_sequence=['#9467bd']
@@ -666,20 +699,20 @@ class SIATDashboard:
 
     def _distributor_insights_charts(self):
         """Comprehensive distributor performance analysis."""
-        if self.pivot_data is not None:
+        if st.session_state.pivot_data is not None:
             col1, col2 = st.columns(2)
 
             with col1:
                 fig = px.bar(
                     st.session_state.pivot_data,
-                    x='Distributor',
-                    y='Total_Incentives',
-                    title="Incentive Recovery by Distributor",
+                    x='Distributor Name',
+                    y='Scheme Total Amt',
+                    title="Scheme Amount by Distributor",
                     labels={
-                        'Distributor': 'Distributor',
-                        'Total_Incentives': 'Total Incentives (₹)'
+                        'Distributor Name': 'Distributor',
+                        'Scheme Total Amt': 'Total Scheme Amount (₹)'
                     },
-                    color='Total_Incentives',
+                    color='Scheme Total Amt',
                     color_continuous_scale='Viridis'
                 )
                 fig.update_xaxes(tickangle=45)
@@ -688,35 +721,38 @@ class SIATDashboard:
             with col2:
                 fig = px.scatter(
                     st.session_state.pivot_data,
-                    x='Total_Incentives',
-                    y='Total_Margin',
-                    size='Total_NLC',
-                    title="Distributor Performance Matrix",
+                    x='Scheme Total Amt',
+                    y='Net Amt Rec',
+                    size='Diff',
+                    title="Distributor Scheme vs Net Amount",
                     labels={
-                        'Total_Incentives': 'Total Incentives',
-                        'Total_Margin': 'Total Margin',
-                        'Total_NLC': 'Net Landing Cost'
+                        'Scheme Total Amt': 'Scheme Amount',
+                        'Net Amt Rec': 'Net Amount Received',
+                        'Diff': 'Difference'
                     },
-                    color='Distributor',
-                    hover_name='Distributor'
+                    color='Distributor Name',
+                    hover_name='Distributor Name'
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Top models by incentive
-            model_incentives = st.session_state.pivot_data.groupby('Model')['Total_Incentives'].sum().nlargest(10).reset_index()
-            fig = px.bar(
-                model_incentives,
-                x='Model',
-                y='Total_Incentives',
-                title="Top 10 Models by Incentive Value",
-                labels={
-                    'Model': 'Device Model',
-                    'Total_Incentives': 'Total Incentives (₹)'
-                },
-                color_discrete_sequence=['#e377c2']
-            )
-            fig.update_xaxes(tickangle=45)
-            st.plotly_chart(fig, use_container_width=True)
+            # Top models by incentive (from raw data)
+            if 'master modal' in st.session_state.processed_data.columns and 'total schme rcvd' in st.session_state.processed_data.columns:
+                model_incentives = st.session_state.processed_data.groupby('master modal')['total schme rcvd'].sum().nlargest(10).reset_index()
+                model_incentives.columns = ['Model', 'Total_Incentives']
+                
+                fig = px.bar(
+                    model_incentives,
+                    x='Model',
+                    y='Total_Incentives',
+                    title="Top 10 Models by Incentive Value",
+                    labels={
+                        'Model': 'Device Model',
+                        'Total_Incentives': 'Total Incentives (₹)'
+                    },
+                    color_discrete_sequence=['#e377c2']
+                )
+                fig.update_xaxes(tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
 
     def _data_quality_charts(self):
         """Data quality and validation insights."""
@@ -830,50 +866,43 @@ class SIATDashboard:
                 st.info(f"Showing {len(display_df)} of {len(st.session_state.processed_data)} total records")
 
         with tab2:
-            st.subheader("Distributor Performance Summary")
-            st.markdown("*Aggregated metrics by distributor*")
+            st.subheader("Distributor Pivot Report")
+            st.markdown("*Scheme reconciliation by distributor*")
 
             if st.session_state.pivot_data is not None:
-                # Format the pivot data
-                display_pivot = self.pivot_data.copy()
-                numeric_cols = ['Total_Incentives', 'Total_NLC', 'Total_Final_Price', 'Total_Margin']
-                for col in numeric_cols:
-                    if col in display_pivot.columns:
-                        display_pivot[col] = display_pivot[col].apply(lambda x: f"₹{x:,.0f}")
-
-                percentage_cols = ['Incentive_Percentage', 'Margin_Percentage']
-                for col in percentage_cols:
-                    if col in display_pivot.columns:
-                        display_pivot[col] = display_pivot[col].apply(lambda x: f"{x:.1f}%")
-
-                st.dataframe(display_pivot, use_container_width=True, hide_index=True)
+                # Display the pivot data
+                st.dataframe(st.session_state.pivot_data, use_container_width=True, hide_index=True)
 
                 # Summary statistics
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Total Distributors", len(display_pivot['Distributor'].unique()))
+                    st.metric("Total Distributors", len(st.session_state.pivot_data))
                 with col2:
-                    top_distributor = display_pivot.loc[display_pivot['Total_Incentives'].idxmax(), 'Distributor']
-                    st.metric("Top Performer", top_distributor)
+                    total_scheme = st.session_state.pivot_data['Scheme Total Amt'].sum()
+                    st.metric("Total Scheme Amount", f"₹{total_scheme:,.2f}")
                 with col3:
-                    st.metric("Total Incentives", f"{display_pivot['Total_Incentives'].sum():,.0f}")
+                    total_net = st.session_state.pivot_data['Net Amt Rec'].sum()
+                    st.metric("Total Net Amount", f"₹{total_net:,.2f}")
 
         with tab3:
             st.subheader("Model Performance Analysis")
             st.markdown("*Performance metrics by device model*")
 
-            if st.session_state.pivot_data is not None:
-                model_summary = st.session_state.pivot_data.groupby('Distributor').agg({
-                    'Total_Incentives': 'sum',
-                    'Total_NLC': 'sum',
-                    'Total_Final_Price': 'sum',
-                    'Total_Margin': 'sum'
+            if st.session_state.processed_data is not None:
+                model_summary = st.session_state.processed_data.groupby('master modal').agg({
+                    'total schme rcvd': 'sum',
+                    'nt nlc (o-ac)': 'sum',
+                    'final price (g-k)': 'sum'
                 }).reset_index()
+                model_summary.columns = ['Model', 'Total_Incentives', 'Total_NLC', 'Total_Final_Price']
+                model_summary['Total_Margin'] = model_summary['Total_Final_Price'] - model_summary['Total_NLC']
                 model_summary = model_summary.sort_values('Total_Incentives', ascending=False)
+                
+                # Format for display
                 display_model = model_summary.copy()
                 for col in ['Total_Incentives', 'Total_NLC', 'Total_Final_Price', 'Total_Margin']:
                     if col in display_model.columns:
-                        display_model[col] = display_model[col].apply(lambda x: f"{x:,.0f}")
+                        display_model[col] = display_model[col].apply(lambda x: f"₹{x:,.2f}")
                 st.dataframe(display_model, use_container_width=True, hide_index=True)
 
     def _create_download_button(self):

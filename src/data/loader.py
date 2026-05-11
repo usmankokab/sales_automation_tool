@@ -309,7 +309,7 @@ class DataLoader:
         Args:
             input_file: Path to the input workbook
             processed_data: Processed sales data with calculations
-            pivot_data: Pivot table data
+            pivot_data: Distributor pivot table data
             output_file: Optional output file path
 
         Returns:
@@ -322,20 +322,19 @@ class DataLoader:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_file = f"{base_name}_processed_{timestamp}.xlsx"
 
-            # Prepare dataframes for beautiful Excel export
+            # Prepare dataframes for Excel export
             dataframes = {
-                'Processed Sales Data': processed_data,
-                'Executive Summary': DataLoader._create_summary_sheet(processed_data, pivot_data)
+                'Processed Sales Data': processed_data
             }
 
-            # Only add distributor summary if pivot_data exists
+            # Add distributor pivot if available
             if pivot_data is not None and not pivot_data.empty:
-                dataframes['Distributor Summary'] = pivot_data
+                dataframes['Distributor Pivot'] = pivot_data
 
             # Create beautifully formatted Excel file
             filepath = DataLoader.create_beautiful_excel(dataframes, output_file)
 
-            logger.info(f"Beautiful Excel results saved to {filepath}")
+            logger.info(f"Excel results saved to {filepath}")
             return filepath
 
         except Exception as e:

@@ -368,16 +368,15 @@ class CalculationEngine:
                 pct_scheme_3_raw = scheme.get('Pct_Scheme_3', 0) or 0
                 pct_scheme_4_raw = scheme.get('Pct_Scheme_4', 0) or 0
                 
-                # Detect if values are already in decimal format (< 1) or percentage format (>= 1)
-                # If value is < 1, it's already decimal (e.g., 0.025), convert to percentage for display (2.5)
-                # If value is >= 1, it's percentage (e.g., 2.5), keep as-is for display
+                # Get flat scheme value
+                _flat = scheme.get('Flat_Scheme', None)
+                flat_scheme = float(_flat) if pd.notna(_flat) else 0
                 
+                # Detect if values are already in decimal format (< 1) or percentage format (>= 1)
                 if pct_scheme_1_raw > 0 and pct_scheme_1_raw < 1:
-                    # Already in decimal format, convert to percentage for display
                     pct_scheme_1 = pct_scheme_1_raw * 100
                     pct_scheme_1_calc = pct_scheme_1_raw
                 else:
-                    # In percentage format, keep for display and convert for calculation
                     pct_scheme_1 = pct_scheme_1_raw
                     pct_scheme_1_calc = pct_scheme_1_raw / 100 if pct_scheme_1_raw > 0 else 0
                 
@@ -401,11 +400,9 @@ class CalculationEngine:
                 else:
                     pct_scheme_4 = pct_scheme_4_raw
                     pct_scheme_4_calc = pct_scheme_4_raw / 100 if pct_scheme_4_raw > 0 else 0
-                
-                _flat = scheme.get('Flat_Scheme', None)
-                flat_scheme = float(_flat) if pd.notna(_flat) else 0
             else:
                 pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = 0
+                flat_scheme = 0
 
             # Step 8: pct amount = pct_scheme_calc * pre_gst_price
             pct_incentive_1 = pct_scheme_1_calc * pre_gst_price
@@ -650,25 +647,36 @@ class CalculationEngine:
             else:
                 return ''
     
-    def generate_pivot_report(self) -> pd.DataFrame:
-        """Generate Distributor-wise pivot report from processed data."""
+    def generate_distributor_pivot_report(self) -> pd.DataFrame:
+        """Generate Distributor-wise pivot report with scheme details."""
         if self.processed_data is None:
             raise ValueError("Must run calculations first")
 
-        logger.info("Generating pivot report...")
+        logger.info("Generating distributor pivot report...")
 
-        # Use the final column names from processed data
-        pivot = pd.pivot_table(
-            self.processed_data,
-            values=['total schme rcvd', 'nt nlc (o-ac)', 'final price (g-k)'],
-            index='distibutor',
-            aggfunc='sum'
-        ).reset_index()
+        # Group by distributor and calculate totals
+        pivot = self.processed_data.groupby('distibutor').agg({
+            'total schme rcvd': 'sum',
+            'final price (g-k)': 'sum'
+        }).reset_index()
 
-        # pivot_table returns columns sorted alphabetically: final price (g-k), nt nlc (o-ac), total schme rcvd
-        pivot.columns = ['Distributor', 'Total_Final_Price', 'Total_NLC', 'Total_Incentives']
-        pivot['Total_Margin'] = pivot['Total_Final_Price'] - pivot['Total_NLC']
+        pivot.columns = ['Distributor Name', 'Scheme Total Amt', 'Net Amt Rec']
+        
+        # Calculate difference
+        pivot['Diff'] = pivot['Net Amt Rec'] - pivot['Scheme Total Amt']
+        
+        # Add empty Remarks column for client input
+        pivot['Remarks'] = ''
+        
+        # Add Scheme Name column (can be customized based on business logic)
+        pivot.insert(1, 'Scheme Name', 'Standard Incentive Scheme')
+        
+        # Round to 2 decimal places
+        pivot['Scheme Total Amt'] = pivot['Scheme Total Amt'].round(2)
+        pivot['Net Amt Rec'] = pivot['Net Amt Rec'].round(2)
+        pivot['Diff'] = pivot['Diff'].round(2)
 
+        logger.info(f"Generated distributor pivot with {len(pivot)} distributors")
         return pivot
     
     def _fuzzy_match_model(self, target: str, candidates: List[str], threshold: int = 80) -> Optional[Tuple[str, int]]:
