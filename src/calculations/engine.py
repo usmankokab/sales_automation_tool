@@ -202,18 +202,18 @@ class CalculationEngine:
         df['Matched_Price'] = df['Purchase_Price'] * (100 / 96)
         df['Sell_Date_Active'] = True  # Always active for this calculation method
 
-        # Step 4: Calculate HIKE = Purchase Price - Bill Less in Invoice
+        # Step 4: Calculate HIKE = Purchase Price - Current Month Invoice Price
         def get_hike_remark(row):
             purchase = row.get('Purchase_Price', 0) or 0
-            bill_less = row.get('Bill_Less_Invoice', 0)
+            current_month_invoice = row.get('Current_Month_Invoice_Price', 0)
             drop = row.get('Drop_Amount', 0) or 0
             
-            # If bill_less is NaN or None, treat as 0
-            if pd.isna(bill_less):
-                bill_less = 0
+            # If current_month_invoice is NaN or None, treat as 0
+            if pd.isna(current_month_invoice):
+                current_month_invoice = 0
             
-            # HIKE = Purchase Price - Bill Less in Invoice
-            hike_value = purchase - bill_less
+            # HIKE = Purchase Price - Current Month Invoice Price
+            hike_value = purchase - current_month_invoice
             
             # Round to 2 decimal places for comparison
             hike_value = round(hike_value, 2)
@@ -513,18 +513,18 @@ class CalculationEngine:
 
         # Use exact column names matching the actual workbook sales sheet (excluding hidden columns)
         final_columns = [
-            'IMEI', 'sell out date', 'activation date', 'master modal', 'SERIES',
+            'IMEI', 'sell out date', 'activation date', 'master model', 'SERIES',
             'distibutor', 'purchase date', 'purchase price',
-            'MOP AT THE TIME OF PURCHASE', 'current mop/srp', 'bill less in invoice ',
-            'invoice price (pre gst amount', 'drop',
+            'MOP AT THE TIME OF PURCHASE', 'current mop/srp', 'Current Month Invoice Price',
+            'Current Month Pre-GST of Invoice Price', 'drop',
             'HIKE', 'remark (drop,hike,same (drop and hike both)',
-            'final price (g-k)', 'pre gst price (final price',
+            'FINAL PRICE FOR CALCULATION', 'PRE GST OF FINAL PRICE CALCULATION',
             'pct scheme -1', 'amount pct sceme -1',
             'pct scheme -2', 'amount pct sceme -2',
             'pct scheme -3', 'amount pct sceme -3',
             'pct scheme -4', 'amount pct sceme -4',
-            'flat payout-1', 'flat payout-2', 'flat payout-3', 'flat payout-4',
-            'total schme rcvd', 'nt nlc (o-ac)'
+            'Flat Payout',
+            'total schme rcvd', 'TOTAL PCT SCHEME + FALT PAYOUT'
         ]
 
         final_df = df.copy()
@@ -533,8 +533,8 @@ class CalculationEngine:
         final_df['MOP AT THE TIME OF PURCHASE'] = final_df.get('Matched_Price', np.nan).round(2)
         final_df['HIKE'] = final_df.get('Calc_HIKE', np.nan).round(2)
         final_df['remark (drop,hike,same (drop and hike both)'] = final_df.get('Calc_Remark', '')
-        final_df['final price (g-k)'] = final_df.get('Tax_Base_Final_Price', np.nan).round(2)
-        final_df['pre gst price (final price'] = final_df.get('Tax_Base_Pre_GST_Price', np.nan).round(2)
+        final_df['FINAL PRICE FOR CALCULATION'] = final_df.get('Tax_Base_Final_Price', np.nan).round(2)
+        final_df['PRE GST OF FINAL PRICE CALCULATION'] = final_df.get('Tax_Base_Pre_GST_Price', np.nan).round(2)
         final_df['pct scheme -1'] = final_df.get('pct_scheme_1', 0)
         final_df['amount pct sceme -1'] = final_df.get('Pct_Incentive_1', 0).round(2)
         final_df['pct scheme -2'] = final_df.get('pct_scheme_2', 0)
@@ -549,35 +549,33 @@ class CalculationEngine:
             if col in final_df.columns:
                 final_df[col] = final_df[col].apply(lambda x: f"{round(x, 2)}%" if pd.notna(x) and x > 0 else ("0%" if pd.notna(x) else ""))
         
-        final_df['flat payout-1'] = final_df.get('Flat_Incentive', 0).round(2)
-        final_df['flat payout-2'] = 0
-        final_df['flat payout-3'] = 0
-        final_df['flat payout-4'] = 0
+        final_df['Flat Payout'] = final_df.get('Flat_Incentive', 0).round(2)
         final_df['total schme rcvd'] = final_df.get('Total_Incentive_Received', 0).round(2)
-        final_df['nt nlc (o-ac)'] = final_df.get('Calculated_NLC', np.nan).round(2)
+        final_df['TOTAL PCT SCHEME + FALT PAYOUT'] = final_df.get('Calculated_NLC', np.nan).round(2)
         final_df['drop'] = final_df.get('Drop_Amount', 0).round(2)
 
         # --- Columns sourced from sales sheet (rename standardized back to display names) ---
         final_df['sell out date'] = final_df.get('Sell_Out_Date', '')
-        final_df['master modal'] = final_df.get('Master_Model', '')
+        final_df['master model'] = final_df.get('Master_Model', '')
         final_df['distibutor'] = final_df.get('Distributor', '')
         final_df['purchase date'] = final_df.get('Purchase_Date', '')
         final_df['purchase price'] = final_df.get('Purchase_Price', np.nan)
-        final_df['bill less in invoice '] = final_df.get('Bill_Less_Invoice', np.nan)
+        final_df['Current Month Invoice Price'] = final_df.get('Current_Month_Invoice_Price', np.nan)
+        final_df['Current Month Pre-GST of Invoice Price'] = final_df.get('Current_Month_Pre_GST_Invoice_Price', np.nan)
 
         # SERIES: use original value from input if available, otherwise extract from master model
         if 'SERIES' in final_df.columns and final_df['SERIES'].notna().any():
             # Keep original SERIES values
             pass
         else:
-            # Extract from master modal as fallback
-            final_df['SERIES'] = final_df['master modal'].astype(str).str.split().str[0]
+            # Extract from master model as fallback
+            final_df['SERIES'] = final_df['master model'].astype(str).str.split().str[0]
         
         # Format IMEI as string without commas
         final_df['IMEI'] = final_df['IMEI'].astype(str).str.replace(',', '', regex=False)
 
         # Columns that come directly from the original sales sheet (pass-through)
-        for col in ['activation date', 'current mop/srp', 'invoice price (pre gst amount']:
+        for col in ['activation date', 'current mop/srp']:
             if col not in final_df.columns:
                 final_df[col] = np.nan
 
@@ -590,9 +588,9 @@ class CalculationEngine:
     def _get_default_value_for_column(self, column_name: str, df: pd.DataFrame):
         """Get default value for columns that don't exist in current data."""
         if column_name == 'SERIES':
-            # Try to extract series from master modal (e.g., "REALME" from "REALME C71 4@64")
-            if 'master modal' in df.columns:
-                return df['master modal'].str.split().str[0]
+            # Try to extract series from master model (e.g., "REALME" from "REALME C71 4@64")
+            if 'master model' in df.columns:
+                return df['master model'].str.split().str[0]
             elif 'Master_Model' in df.columns:
                 return df['Master_Model'].str.split().str[0]
             return ''
@@ -636,10 +634,6 @@ class CalculationEngine:
             # Corresponding calculated amounts
             return 0
 
-        elif column_name in ['flat payout-2', 'flat payout-3', 'flat payout-4']:
-            # Additional flat payouts (currently only 1 is implemented)
-            return 0
-
         else:
             # Default to 0 for numeric columns, empty string for others
             if any(keyword in column_name.lower() for keyword in ['price', 'amount', 'incentive', 'payout', 'schme', 'nlc']):
@@ -657,7 +651,7 @@ class CalculationEngine:
         # Group by distributor and calculate totals
         pivot = self.processed_data.groupby('distibutor').agg({
             'total schme rcvd': 'sum',
-            'final price (g-k)': 'sum'
+            'FINAL PRICE FOR CALCULATION': 'sum'
         }).reset_index()
 
         pivot.columns = ['Distributor Name', 'Scheme Total Amt', 'Net Amt Rec']
@@ -714,7 +708,7 @@ class CalculationEngine:
             if not invalid_dates.empty:
                 validation_errors.append(f"Found {len(invalid_dates)} records where Sell Out Date is before Purchase Date")
 
-        missing_models = self.processed_data['master modal'].isna().sum()
+        missing_models = self.processed_data['master model'].isna().sum()
         if missing_models > 0:
             validation_errors.append(f"Found {missing_models} records with missing Master Model")
 

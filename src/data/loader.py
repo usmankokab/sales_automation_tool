@@ -154,8 +154,10 @@ class DataLoader:
             'distributor': 'Distributor',
             'purchase date': 'Purchase_Date',
             'purchase price': 'Purchase_Price',
-            'bill less in invoice': 'Bill_Less_Invoice',
-            'bill less in invoice ': 'Bill_Less_Invoice',
+            'bill less in invoice': 'Current_Month_Invoice_Price',
+            'bill less in invoice ': 'Current_Month_Invoice_Price',
+            'invoice price (pre gst amount': 'Current_Month_Pre_GST_Invoice_Price',
+            'invoice price (pre gst amount)': 'Current_Month_Pre_GST_Invoice_Price',
             'series': 'SERIES',
             'drop': 'Original_Drop',  # Rename existing drop column to avoid conflicts
         }
