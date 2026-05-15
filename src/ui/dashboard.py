@@ -192,6 +192,35 @@ class SIATDashboard:
             st.session_state.selected_brand = selected_brand
         
         st.sidebar.markdown("---")
+        st.sidebar.markdown('<div class="sidebar-header">⚙️ Conditions</div>', unsafe_allow_html=True)
+        
+        # Price variable selection for Final Price calculation
+        price_options = [
+            "-- Select Price Variable --",
+            "Current Month Invoice Price",
+            "Purchase Price",
+            "Current MOP/SRP"
+        ]
+        
+        selected_price_variable = st.sidebar.selectbox(
+            "Select to calculate - Final Price for Calculation *",
+            price_options,
+            index=0,
+            help="Required: Select which price field to use in Final Price calculation formula",
+            key="price_variable_selector"
+        )
+        
+        # Purchase Price Threshold for PCT Scheme-1 A/B selection
+        purchase_price_threshold = st.sidebar.number_input(
+            "Purchase Price Threshold",
+            min_value=0.0,
+            value=0.0,
+            step=100.0,
+            help="Optional: Enter threshold for PCT Scheme-1 A/B selection. Leave as 0 if not applicable.",
+            key="purchase_price_threshold"
+        )
+        
+        st.sidebar.markdown("---")
         st.sidebar.markdown('<div class="sidebar-header">📊 Workbook Upload</div>', unsafe_allow_html=True)
 
         # Check if brand is selected
@@ -265,6 +294,20 @@ class SIATDashboard:
                 st.sidebar.markdown("---")
 
                 if st.sidebar.button("🚀 Process Calculations", type="primary", use_container_width=True):
+                    # Validate price variable selection
+                    if st.session_state.price_variable_selector == "-- Select Price Variable --":
+                        st.sidebar.error("⚠️ Please select a price variable for Final Price calculation")
+                        st.error("⚠️ Price variable is required. Please select a price field from the 'Select to calculate - Final Price for Calculation' dropdown in the Conditions section.")
+                        return
+                    
+                    # Validate A/B scheme logic before processing
+                    validation_error = self._validate_scheme_ab_logic()
+                    
+                    if validation_error:
+                        st.sidebar.error(validation_error)
+                        st.error(validation_error)
+                        return
+                    
                     # Processing status container
                     status_container = st.sidebar.container()
 
@@ -304,6 +347,50 @@ class SIATDashboard:
                 if st.sidebar.button("🧹 Cleanup Temp Files", help="Remove temporary files created during processing"):
                     self._cleanup_temp_files()
                     st.sidebar.success("✅ Temp files cleaned up")
+
+    def _validate_scheme_ab_logic(self):
+        """Validate PCT Scheme-1 A/B logic before processing."""
+        if not hasattr(self, 'scheme_file') or self.scheme_file is None:
+            return None
+        
+        # Check if A/B columns exist
+        has_a_col = 'Pct_Scheme_1_A' in self.scheme_file.columns
+        has_b_col = 'Pct_Scheme_1_B' in self.scheme_file.columns
+        has_condition_col = 'Condition_1' in self.scheme_file.columns
+        
+        if not (has_a_col or has_b_col):
+            return None
+        
+        # Check if any A/B values exist
+        has_a_values = False
+        has_b_values = False
+        
+        if has_a_col:
+            has_a_values = self.scheme_file['Pct_Scheme_1_A'].notna().any()
+        if has_b_col:
+            has_b_values = self.scheme_file['Pct_Scheme_1_B'].notna().any()
+        
+        if not (has_a_values or has_b_values):
+            return None
+        
+        # Check if CONDITION-1 has "PRICE SLAB" in any row
+        has_price_slab = False
+        if has_condition_col:
+            condition_values = self.scheme_file['Condition_1'].astype(str).str.lower().str.strip()
+            has_price_slab = condition_values.isin(['price slab', 'priceslab', 'price_slab']).any()
+        
+        # Get threshold from widget
+        threshold = st.session_state.purchase_price_threshold if st.session_state.purchase_price_threshold > 0 else None
+        
+        # If PRICE SLAB condition exists and threshold is not provided
+        if has_price_slab and threshold is None:
+            return (
+                "⚠️ Purchase Price threshold is required because scheme sheet contains "
+                "PCT Scheme-1 (A)/(B) with PRICE SLAB condition. Please enter threshold value "
+                "in the Conditions section or correct scheme headings."
+            )
+        
+        return None
 
     def _show_debug_info(self):
         """Show debug information about loaded data."""
@@ -346,7 +433,10 @@ class SIATDashboard:
 
             self.calculation_engine = CalculationEngine(
                 self.drop_dump, self.price_list,
-                self.scheme_file, self.sales_data
+                self.scheme_file, self.sales_data,
+                brand=st.session_state.selected_brand,
+                purchase_price_threshold=st.session_state.purchase_price_threshold if st.session_state.purchase_price_threshold > 0 else None,
+                price_variable_column=st.session_state.price_variable_selector
             )
             logger.info("Calculation engine initialized successfully")
 
@@ -621,7 +711,7 @@ class SIATDashboard:
             flat_incentives = 0
 
             # Sum all percentage scheme amounts
-            pct_cols = ['amount pct sceme -1', 'amount pct sceme -2', 'amount pct sceme -3', 'amount pct sceme -4']
+            pct_cols = ['Amount PCT Scheme-1', 'Amount PCT Scheme-2', 'Amount PCT Scheme-3', 'Amount PCT Scheme-4']
             for col in pct_cols:
                 if col in st.session_state.processed_data.columns:
                     pct_incentives += st.session_state.processed_data[col].sum()
@@ -758,40 +848,44 @@ class SIATDashboard:
 
     def _distributor_insights_charts(self):
         """Comprehensive distributor performance analysis."""
-        if st.session_state.pivot_data is not None:
+        if st.session_state.pivot_data is not None and not st.session_state.pivot_data.empty:
             col1, col2 = st.columns(2)
 
             with col1:
+                # Aggregate by distributor (sum across all schemes)
+                dist_summary = st.session_state.pivot_data.groupby('Distributor Name')['Final AMT'].sum().reset_index()
+                
                 fig = px.bar(
-                    st.session_state.pivot_data,
+                    dist_summary,
                     x='Distributor Name',
-                    y='Scheme Total Amt',
-                    title="Scheme Amount by Distributor",
+                    y='Final AMT',
+                    title="Total Scheme Amount by Distributor",
                     labels={
                         'Distributor Name': 'Distributor',
-                        'Scheme Total Amt': 'Total Scheme Amount (₹)'
+                        'Final AMT': 'Total Scheme Amount (₹)'
                     },
-                    color='Scheme Total Amt',
+                    color='Final AMT',
                     color_continuous_scale='Viridis'
                 )
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                fig = px.scatter(
+                # Scheme breakdown by distributor
+                fig = px.bar(
                     st.session_state.pivot_data,
-                    x='Scheme Total Amt',
-                    y='Net Amt Rec',
-                    size='Diff',
-                    title="Distributor Scheme vs Net Amount",
+                    x='Distributor Name',
+                    y='Final AMT',
+                    color='Scheme Name',
+                    title="Scheme Breakdown by Distributor",
                     labels={
-                        'Scheme Total Amt': 'Scheme Amount',
-                        'Net Amt Rec': 'Net Amount Received',
-                        'Diff': 'Difference'
+                        'Distributor Name': 'Distributor',
+                        'Final AMT': 'Scheme Amount (₹)',
+                        'Scheme Name': 'Scheme Type'
                     },
-                    color='Distributor Name',
-                    hover_name='Distributor Name'
+                    barmode='stack'
                 )
+                fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
             # Top models by incentive (from raw data)
@@ -935,15 +1029,13 @@ class SIATDashboard:
                 st.dataframe(st.session_state.pivot_data, use_container_width=True, hide_index=True)
 
                 # Summary statistics
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Total Distributors", len(st.session_state.pivot_data))
+                    unique_distributors = st.session_state.pivot_data['Distributor Name'].nunique()
+                    st.metric("Total Distributors", unique_distributors)
                 with col2:
-                    total_scheme = st.session_state.pivot_data['Scheme Total Amt'].sum()
+                    total_scheme = st.session_state.pivot_data['Final AMT'].sum()
                     st.metric("Total Scheme Amount", f"₹{total_scheme:,.2f}")
-                with col3:
-                    total_net = st.session_state.pivot_data['Net Amt Rec'].sum()
-                    st.metric("Total Net Amount", f"₹{total_net:,.2f}")
 
         with tab3:
             st.subheader("Model Performance Analysis")

@@ -160,6 +160,7 @@ class DataLoader:
             'invoice price (pre gst amount)': 'Current_Month_Pre_GST_Invoice_Price',
             'series': 'SERIES',
             'drop': 'Original_Drop',  # Rename existing drop column to avoid conflicts
+            'current mop/srp': 'current mop/srp',  # Keep as-is for price variable selection
         }
 
         df = df.rename(columns=column_mapping)
@@ -226,6 +227,18 @@ class DataLoader:
             'end': 'Scheme_End_Date',
             'to date': 'Scheme_End_Date',
             'pct scheme -1': 'Pct_Scheme_1',
+            'pct scheme -1 (a)': 'Pct_Scheme_1_A',
+            'pct scheme -1(a)': 'Pct_Scheme_1_A',
+            'pct scheme -1 a': 'Pct_Scheme_1_A',
+            'pct scheme-1 (a)': 'Pct_Scheme_1_A',
+            'pct scheme-1(a)': 'Pct_Scheme_1_A',
+            'pct scheme-1 a': 'Pct_Scheme_1_A',
+            'pct scheme -1 (b)': 'Pct_Scheme_1_B',
+            'pct scheme -1(b)': 'Pct_Scheme_1_B',
+            'pct scheme -1 b': 'Pct_Scheme_1_B',
+            'pct scheme-1 (b)': 'Pct_Scheme_1_B',
+            'pct scheme-1(b)': 'Pct_Scheme_1_B',
+            'pct scheme-1 b': 'Pct_Scheme_1_B',
             'pct scheme -2': 'Pct_Scheme_2',
             'pct scheme -3': 'Pct_Scheme_3',
             'pct scheme -4': 'Pct_Scheme_4',
@@ -233,6 +246,12 @@ class DataLoader:
             'flat scheme': 'Flat_Scheme',
             'flat_scheme': 'Flat_Scheme',
             'flat': 'Flat_Scheme',
+            'flat payout': 'Flat_Scheme',
+            'condition-1': 'Condition_1',
+            'condition -1': 'Condition_1',
+            'condition_1': 'Condition_1',
+            'condition 1': 'Condition_1',
+            'condition1': 'Condition_1',
         }
 
         df = df.rename(columns=column_mapping)

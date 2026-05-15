@@ -12,7 +12,9 @@ class CalculationEngine:
     """Implements the 11-step SIAT calculation logic for single workbook processing."""
 
     def __init__(self, drop_dump: pd.DataFrame, price_list: pd.DataFrame,
-                 scheme_file: pd.DataFrame, sales_data: pd.DataFrame):
+                 scheme_file: pd.DataFrame, sales_data: pd.DataFrame, brand: str = None,
+                 purchase_price_threshold: Optional[float] = None,
+                 price_variable_column: str = None):
         """
         Initialize with all required data sources from workbook.
 
@@ -21,11 +23,17 @@ class CalculationEngine:
             price_list: DataFrame with pricing information
             scheme_file: DataFrame with scheme definitions
             sales_data: DataFrame with sales transactions
+            brand: Selected brand name for brand-specific calculations
+            purchase_price_threshold: Optional threshold for PCT Scheme-1 A/B selection
+            price_variable_column: Price field to use in Final Price calculation (required)
         """
         self.drop_dump = drop_dump.copy()
         self.price_list = price_list.copy()
         self.scheme_file = scheme_file.copy()
         self.sales_data = sales_data.copy()
+        self.brand = brand
+        self.purchase_price_threshold = purchase_price_threshold
+        self.price_variable_column = price_variable_column
         self.processed_data = None
         self.errors = []
 
@@ -245,11 +253,14 @@ class CalculationEngine:
         return df
     
     def _step_5_6_tax_base(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Step 5-6: Calculate Final Price and Pre-GST Price."""
+        """Step 5-6: Calculate Final Price and Pre-GST Price with brand-specific logic."""
         logger.info("Step 5-6: Calculating tax base...")
 
-        # Use Purchase_Price for final price calculation (as per user requirement)
-        # final price = purchase price - drop
+        # Validate that price_variable_column is provided
+        if not self.price_variable_column or self.price_variable_column == "-- Select Price Variable --":
+            raise ValueError("Price variable column must be selected for Final Price calculation")
+
+        # Ensure required columns exist
         if 'Purchase_Price' not in df.columns:
             logger.warning("Purchase_Price column missing, using 0 as fallback")
             df['Purchase_Price'] = 0
@@ -257,9 +268,73 @@ class CalculationEngine:
         if 'Drop_Amount' not in df.columns:
             logger.warning("Drop_Amount column missing, assuming 0")
             df['Drop_Amount'] = 0
+            
+        if 'Current_Month_Invoice_Price' not in df.columns:
+            logger.warning("Current_Month_Invoice_Price column missing, assuming 0")
+            df['Current_Month_Invoice_Price'] = 0
 
-        # Final Price = Purchase Price - Drop Amount
-        df['Tax_Base_Final_Price'] = df['Purchase_Price'] - df['Drop_Amount']
+        # Map user-selected price variable to actual column name
+        price_column_mapping = {
+            "Current Month Invoice Price": "Current_Month_Invoice_Price",
+            "Purchase Price": "Purchase_Price",
+            "Current MOP/SRP": "current_mop_srp"  # This will be mapped from sales sheet
+        }
+        
+        # Get the actual column name based on user selection
+        selected_column = price_column_mapping.get(self.price_variable_column)
+        
+        if not selected_column:
+            raise ValueError(f"Invalid price variable selection: {self.price_variable_column}")
+        
+        # Handle Current MOP/SRP - need to check if it exists in dataframe
+        if selected_column == "current_mop_srp":
+            # Try to find the column with various possible names
+            possible_names = ['current mop/srp', 'Current MOP/SRP', 'current_mop_srp', 'Current_MOP_SRP']
+            found_column = None
+            for col_name in possible_names:
+                if col_name in df.columns:
+                    found_column = col_name
+                    break
+            
+            if found_column:
+                selected_column = found_column
+            else:
+                raise ValueError(f"Current MOP/SRP column not found in sales data. Available columns: {list(df.columns)}")
+        
+        # Ensure the selected column exists
+        if selected_column not in df.columns:
+            raise ValueError(f"{selected_column} column not found in sales data. Available columns: {list(df.columns)}")
+
+        # Get the price variable value for each row
+        price_variable = df[selected_column].fillna(0)
+
+        # Brand-specific Final Price calculation with dynamic price variable
+        brand_upper = self.brand.upper() if self.brand else ""
+        
+        logger.info(f"Applying brand-specific calculation for: {brand_upper}")
+        logger.info(f"Using price variable: {self.price_variable_column} (column: {selected_column})")
+        
+        if brand_upper == "REDMI":
+            # REDMI: FINAL PRICE = {price_variable} - DROP
+            df['Tax_Base_Final_Price'] = price_variable - df['Drop_Amount']
+            logger.info(f"Applied REDMI formula: {self.price_variable_column} - Drop")
+            
+        elif brand_upper == "SAMSUNG":
+            # SAMSUNG: FINAL PRICE = {price_variable} - DROP - FLAT PAYOUT
+            # Note: Flat payout will be calculated later, so we'll adjust this in step 10
+            df['Tax_Base_Final_Price'] = price_variable - df['Drop_Amount']
+            df['Samsung_Adjustment_Needed'] = True  # Flag for later adjustment
+            logger.info(f"Applied SAMSUNG formula: {self.price_variable_column} - Drop (Flat Payout will be deducted later)")
+            
+        elif brand_upper in ["REALME", "OPPO"]:
+            # REALME/OPPO: FINAL PRICE = {price_variable} - DROP
+            df['Tax_Base_Final_Price'] = price_variable - df['Drop_Amount']
+            logger.info(f"Applied {brand_upper} formula: {self.price_variable_column} - Drop")
+            
+        else:
+            # Default for other brands: {price_variable} - DROP
+            df['Tax_Base_Final_Price'] = price_variable - df['Drop_Amount']
+            logger.info(f"Applied default formula: {self.price_variable_column} - Drop")
 
         # Pre-GST Price = Final Price / 1.18
         df['Tax_Base_Pre_GST_Price'] = df['Tax_Base_Final_Price'] / 1.18
@@ -322,6 +397,7 @@ class CalculationEngine:
             sell_date = row['Sell_Out_Date']
             pre_gst_price = row.get('Tax_Base_Pre_GST_Price', 0) or 0
             sell_date_active = row.get('Sell_Date_Active', True)
+            purchase_price = row.get('Purchase_Price', 0) or 0
 
             zero = pd.Series({
                 'pct_scheme_1': 0, 'pct_scheme_2': 0, 'pct_scheme_3': 0, 'pct_scheme_4': 0,
@@ -362,8 +438,34 @@ class CalculationEngine:
 
             if not applicable_schemes.empty:
                 scheme = applicable_schemes.iloc[0]
-                # Get percentage values AS-IS from scheme sheet
-                pct_scheme_1_raw = scheme.get('Pct_Scheme_1', 0) or 0
+                
+                # Check CONDITION-1 for PCT Scheme-1 A/B logic
+                condition_1 = str(scheme.get('Condition_1', '')).strip().lower()
+                has_price_slab = condition_1 in ['price slab', 'priceslab', 'price_slab']
+                
+                # Check if A/B columns exist
+                has_a_col = 'Pct_Scheme_1_A' in self.scheme_file.columns
+                has_b_col = 'Pct_Scheme_1_B' in self.scheme_file.columns
+                
+                # Get PCT Scheme-1 value based on conditions
+                if has_price_slab and has_a_col and has_b_col:
+                    # CONDITION-1 = "PRICE SLAB" - use threshold logic
+                    if self.purchase_price_threshold is not None:
+                        if purchase_price <= self.purchase_price_threshold:
+                            pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                        else:
+                            pct_scheme_1_raw = scheme.get('Pct_Scheme_1_B', 0) or 0
+                    else:
+                        # Threshold not provided but A/B exist - this should be caught in validation
+                        pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                elif has_a_col:
+                    # CONDITION-1 != "PRICE SLAB" or missing - always use A if exists
+                    pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                else:
+                    # No A/B columns - use original PCT Scheme-1
+                    pct_scheme_1_raw = scheme.get('Pct_Scheme_1', 0) or 0
+                
+                # Get other scheme values
                 pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
                 pct_scheme_3_raw = scheme.get('Pct_Scheme_3', 0) or 0
                 pct_scheme_4_raw = scheme.get('Pct_Scheme_4', 0) or 0
@@ -452,7 +554,7 @@ class CalculationEngine:
         return df
 
     def _step_10_nlc(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Step 10: Calculate Net Landing Cost (NLC)."""
+        """Step 10: Calculate Net Landing Cost (NLC) with Samsung adjustment."""
         logger.info("Step 10: Calculating Net Landing Cost...")
 
         # Ensure required columns exist
@@ -467,9 +569,23 @@ class CalculationEngine:
         if 'Total_Incentive_Received' not in df.columns:
             logger.warning("Total_Incentive_Received column missing, assuming 0")
             df['Total_Incentive_Received'] = 0
+            
+        if 'Flat_Incentive' not in df.columns:
+            logger.warning("Flat_Incentive column missing, assuming 0")
+            df['Flat_Incentive'] = 0
 
-        # Final Price = Purchase Price - Drop Amount (as per user requirement)
-        df['Calculated_Final_Price'] = df['Purchase_Price'] - df['Drop_Amount']
+        # Samsung-specific adjustment: Subtract Flat Payout from Final Price
+        brand_upper = self.brand.upper() if self.brand else ""
+        if brand_upper == "SAMSUNG" and 'Samsung_Adjustment_Needed' in df.columns:
+            df['Tax_Base_Final_Price'] = df['Tax_Base_Final_Price'] - df['Flat_Incentive']
+            df['Final_Price'] = df['Tax_Base_Final_Price']
+            # Recalculate Pre-GST Price after adjustment
+            df['Tax_Base_Pre_GST_Price'] = df['Tax_Base_Final_Price'] / 1.18
+            df['Pre_GST_Price'] = df['Tax_Base_Pre_GST_Price']
+            logger.info("Applied Samsung adjustment: Subtracted Flat Payout from Final Price")
+
+        # Store final price for calculations
+        df['Calculated_Final_Price'] = df['Tax_Base_Final_Price']
 
         # NLC = Final Price - Total Incentive Received
         df['Calculated_NLC'] = df['Calculated_Final_Price'] - df['Total_Incentive_Received']
@@ -516,14 +632,13 @@ class CalculationEngine:
             'IMEI', 'sell out date', 'activation date', 'master model', 'SERIES',
             'distibutor', 'purchase date', 'purchase price',
             'MOP AT THE TIME OF PURCHASE', 'current mop/srp', 'Current Month Invoice Price',
-            'Current Month Pre-GST of Invoice Price', 'drop',
+            'Current Month Pre-GST of Invoice Price', 'drop', 'Flat Payout',
             'HIKE', 'remark (drop,hike,same (drop and hike both)',
             'FINAL PRICE FOR CALCULATION', 'PRE GST OF FINAL PRICE CALCULATION',
-            'pct scheme -1', 'amount pct sceme -1',
-            'pct scheme -2', 'amount pct sceme -2',
-            'pct scheme -3', 'amount pct sceme -3',
-            'pct scheme -4', 'amount pct sceme -4',
-            'Flat Payout',
+            'PCT Scheme-1', 'Amount PCT Scheme-1',
+            'PCT Scheme-2', 'Amount PCT Scheme-2',
+            'PCT Scheme-3', 'Amount PCT Scheme-3',
+            'PCT Scheme-4', 'Amount PCT Scheme-4',
             'total schme rcvd', 'TOTAL PCT SCHEME + FALT PAYOUT'
         ]
 
@@ -535,17 +650,17 @@ class CalculationEngine:
         final_df['remark (drop,hike,same (drop and hike both)'] = final_df.get('Calc_Remark', '')
         final_df['FINAL PRICE FOR CALCULATION'] = final_df.get('Tax_Base_Final_Price', np.nan).round(2)
         final_df['PRE GST OF FINAL PRICE CALCULATION'] = final_df.get('Tax_Base_Pre_GST_Price', np.nan).round(2)
-        final_df['pct scheme -1'] = final_df.get('pct_scheme_1', 0)
-        final_df['amount pct sceme -1'] = final_df.get('Pct_Incentive_1', 0).round(2)
-        final_df['pct scheme -2'] = final_df.get('pct_scheme_2', 0)
-        final_df['amount pct sceme -2'] = final_df.get('Pct_Incentive_2', 0).round(2)
-        final_df['pct scheme -3'] = final_df.get('pct_scheme_3', 0)
-        final_df['amount pct sceme -3'] = final_df.get('Pct_Incentive_3', 0).round(2)
-        final_df['pct scheme -4'] = final_df.get('pct_scheme_4', 0)
-        final_df['amount pct sceme -4'] = final_df.get('Pct_Incentive_4', 0).round(2)
+        final_df['PCT Scheme-1'] = final_df.get('pct_scheme_1', 0)
+        final_df['Amount PCT Scheme-1'] = final_df.get('Pct_Incentive_1', 0).round(2)
+        final_df['PCT Scheme-2'] = final_df.get('pct_scheme_2', 0)
+        final_df['Amount PCT Scheme-2'] = final_df.get('Pct_Incentive_2', 0).round(2)
+        final_df['PCT Scheme-3'] = final_df.get('pct_scheme_3', 0)
+        final_df['Amount PCT Scheme-3'] = final_df.get('Pct_Incentive_3', 0).round(2)
+        final_df['PCT Scheme-4'] = final_df.get('pct_scheme_4', 0)
+        final_df['Amount PCT Scheme-4'] = final_df.get('Pct_Incentive_4', 0).round(2)
         
         # Format percentage columns to show with % symbol (rounded to 2 decimals)
-        for col in ['pct scheme -1', 'pct scheme -2', 'pct scheme -3', 'pct scheme -4']:
+        for col in ['PCT Scheme-1', 'PCT Scheme-2', 'PCT Scheme-3', 'PCT Scheme-4']:
             if col in final_df.columns:
                 final_df[col] = final_df[col].apply(lambda x: f"{round(x, 2)}%" if pd.notna(x) and x > 0 else ("0%" if pd.notna(x) else ""))
         
@@ -626,11 +741,11 @@ class CalculationEngine:
                 remarks.append(', '.join(remark_parts))
             return remarks
 
-        elif column_name in ['pct scheme -2', 'pct scheme -3', 'pct scheme -4']:
+        elif column_name in ['pct scheme -2', 'pct scheme -3', 'pct scheme -4', 'PCT Scheme-2', 'PCT Scheme-3', 'PCT Scheme-4']:
             # Additional percentage schemes (currently only 2 are implemented)
             return 0
 
-        elif column_name in ['amount pct scheme -2', 'amount pct scheme -3', 'amount pct scheme -4']:
+        elif column_name in ['amount pct scheme -2', 'amount pct scheme -3', 'amount pct scheme -4', 'Amount PCT Scheme-2', 'Amount PCT Scheme-3', 'Amount PCT Scheme-4']:
             # Corresponding calculated amounts
             return 0
 
@@ -648,29 +763,45 @@ class CalculationEngine:
 
         logger.info("Generating distributor pivot report...")
 
-        # Group by distributor and calculate totals
-        pivot = self.processed_data.groupby('distibutor').agg({
-            'total schme rcvd': 'sum',
-            'FINAL PRICE FOR CALCULATION': 'sum'
-        }).reset_index()
+        # Define scheme mappings
+        scheme_mappings = [
+            ('PCT Scheme-1', 'Amount PCT Scheme-1'),
+            ('PCT Scheme-2', 'Amount PCT Scheme-2'),
+            ('PCT Scheme-3', 'Amount PCT Scheme-3'),
+            ('PCT Scheme-4', 'Amount PCT Scheme-4'),
+            ('Flat Payout', 'Flat Payout')
+        ]
 
-        pivot.columns = ['Distributor Name', 'Scheme Total Amt', 'Net Amt Rec']
-        
-        # Calculate difference
-        pivot['Diff'] = pivot['Net Amt Rec'] - pivot['Scheme Total Amt']
-        
-        # Add empty Remarks column for client input
-        pivot['Remarks'] = ''
-        
-        # Add Scheme Name column (can be customized based on business logic)
-        pivot.insert(1, 'Scheme Name', 'Standard Incentive Scheme')
-        
-        # Round to 2 decimal places
-        pivot['Scheme Total Amt'] = pivot['Scheme Total Amt'].round(2)
-        pivot['Net Amt Rec'] = pivot['Net Amt Rec'].round(2)
-        pivot['Diff'] = pivot['Diff'].round(2)
+        pivot_rows = []
 
-        logger.info(f"Generated distributor pivot with {len(pivot)} distributors")
+        # Group by distributor
+        for distributor in self.processed_data['distibutor'].unique():
+            if pd.isna(distributor):
+                continue
+
+            dist_data = self.processed_data[self.processed_data['distibutor'] == distributor]
+
+            # Check each scheme type
+            for scheme_name, amount_col in scheme_mappings:
+                # Sum the amount for this scheme
+                total_amount = dist_data[amount_col].sum()
+
+                # Only include if amount > 0 (exclude zero and empty)
+                if total_amount > 0:
+                    pivot_rows.append({
+                        'Distributor Name': distributor,
+                        'Scheme Name': scheme_name,
+                        'Final AMT': round(total_amount, 2)
+                    })
+
+        # Create DataFrame
+        pivot = pd.DataFrame(pivot_rows)
+
+        # Sort by Distributor Name, then Scheme Name
+        if not pivot.empty:
+            pivot = pivot.sort_values(['Distributor Name', 'Scheme Name']).reset_index(drop=True)
+
+        logger.info(f"Generated distributor pivot with {len(pivot)} rows")
         return pivot
     
     def _fuzzy_match_model(self, target: str, candidates: List[str], threshold: int = 80) -> Optional[Tuple[str, int]]:
