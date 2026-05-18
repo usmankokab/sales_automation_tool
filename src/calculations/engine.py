@@ -210,7 +210,7 @@ class CalculationEngine:
         df['Matched_Price'] = df['Purchase_Price'] * (100 / 96)
         df['Sell_Date_Active'] = True  # Always active for this calculation method
 
-        # Step 4: Calculate HIKE = Purchase Price - Current Month Invoice Price
+        # Step 4: Calculate HIKE = Current Month Invoice Price - Purchase Price
         def get_hike_remark(row):
             purchase = row.get('Purchase_Price', 0) or 0
             current_month_invoice = row.get('Current_Month_Invoice_Price', 0)
@@ -220,8 +220,8 @@ class CalculationEngine:
             if pd.isna(current_month_invoice):
                 current_month_invoice = 0
             
-            # HIKE = Purchase Price - Current Month Invoice Price
-            hike_value = purchase - current_month_invoice
+            # HIKE = Current Month Invoice Price - Purchase Price
+            hike_value = current_month_invoice - purchase
             
             # Round to 2 decimal places for comparison
             hike_value = round(hike_value, 2)
@@ -629,25 +629,25 @@ class CalculationEngine:
 
         # Use exact column names matching the actual workbook sales sheet (excluding hidden columns)
         final_columns = [
-            'IMEI', 'sell out date', 'activation date', 'master model', 'SERIES',
-            'distibutor', 'purchase date', 'purchase price',
-            'MOP AT THE TIME OF PURCHASE', 'current mop/srp', 'Current Month Invoice Price',
-            'Current Month Pre-GST of Invoice Price', 'drop', 'Flat Payout',
-            'HIKE', 'remark (drop,hike,same (drop and hike both)',
+            'IMEI', 'Sell Out Date', 'Activation Date', 'Master Model', 'SERIES',
+            'Distributor', 'Purchase Date', 'Purchase Price',
+            'MOP at the Time of Purchase', 'Current MOP/SRP', 'Current Month Invoice Price',
+            'Current Month Pre-GST of Invoice Price', 'Drop', 'Flat Payout',
+            'HIKE', 'Remark (Drop, Hike, Same (Drop and Hike Both)',
             'FINAL PRICE FOR CALCULATION', 'PRE GST OF FINAL PRICE CALCULATION',
             'PCT Scheme-1', 'Amount PCT Scheme-1',
             'PCT Scheme-2', 'Amount PCT Scheme-2',
             'PCT Scheme-3', 'Amount PCT Scheme-3',
             'PCT Scheme-4', 'Amount PCT Scheme-4',
-            'total schme rcvd', 'TOTAL PCT SCHEME + FALT PAYOUT'
+            'Total Scheme Received', 'TOTAL PCT SCHEME + FLAT PAYOUT'
         ]
 
         final_df = df.copy()
 
         # --- Columns from calculations (rounded to 2 decimal places) ---
-        final_df['MOP AT THE TIME OF PURCHASE'] = final_df.get('Matched_Price', np.nan).round(2)
+        final_df['MOP at the Time of Purchase'] = final_df.get('Matched_Price', np.nan).round(2)
         final_df['HIKE'] = final_df.get('Calc_HIKE', np.nan).round(2)
-        final_df['remark (drop,hike,same (drop and hike both)'] = final_df.get('Calc_Remark', '')
+        final_df['Remark (Drop, Hike, Same (Drop and Hike Both)'] = final_df.get('Calc_Remark', '')
         final_df['FINAL PRICE FOR CALCULATION'] = final_df.get('Tax_Base_Final_Price', np.nan).round(2)
         final_df['PRE GST OF FINAL PRICE CALCULATION'] = final_df.get('Tax_Base_Pre_GST_Price', np.nan).round(2)
         final_df['PCT Scheme-1'] = final_df.get('pct_scheme_1', 0)
@@ -665,16 +665,16 @@ class CalculationEngine:
                 final_df[col] = final_df[col].apply(lambda x: f"{round(x, 2)}%" if pd.notna(x) and x > 0 else ("0%" if pd.notna(x) else ""))
         
         final_df['Flat Payout'] = final_df.get('Flat_Incentive', 0).round(2)
-        final_df['total schme rcvd'] = final_df.get('Total_Incentive_Received', 0).round(2)
-        final_df['TOTAL PCT SCHEME + FALT PAYOUT'] = final_df.get('Calculated_NLC', np.nan).round(2)
-        final_df['drop'] = final_df.get('Drop_Amount', 0).round(2)
+        final_df['Total Scheme Received'] = final_df.get('Total_Incentive_Received', 0).round(2)
+        final_df['TOTAL PCT SCHEME + FLAT PAYOUT'] = final_df.get('Calculated_NLC', np.nan).round(2)
+        final_df['Drop'] = final_df.get('Drop_Amount', 0).round(2)
 
         # --- Columns sourced from sales sheet (rename standardized back to display names) ---
-        final_df['sell out date'] = final_df.get('Sell_Out_Date', '')
-        final_df['master model'] = final_df.get('Master_Model', '')
-        final_df['distibutor'] = final_df.get('Distributor', '')
-        final_df['purchase date'] = final_df.get('Purchase_Date', '')
-        final_df['purchase price'] = final_df.get('Purchase_Price', np.nan)
+        final_df['Sell Out Date'] = final_df.get('Sell_Out_Date', '')
+        final_df['Master Model'] = final_df.get('Master_Model', '')
+        final_df['Distributor'] = final_df.get('Distributor', '')
+        final_df['Purchase Date'] = final_df.get('Purchase_Date', '')
+        final_df['Purchase Price'] = final_df.get('Purchase_Price', np.nan)
         final_df['Current Month Invoice Price'] = final_df.get('Current_Month_Invoice_Price', np.nan)
         final_df['Current Month Pre-GST of Invoice Price'] = final_df.get('Current_Month_Pre_GST_Invoice_Price', np.nan)
 
@@ -684,13 +684,13 @@ class CalculationEngine:
             pass
         else:
             # Extract from master model as fallback
-            final_df['SERIES'] = final_df['master model'].astype(str).str.split().str[0]
+            final_df['SERIES'] = final_df['Master Model'].astype(str).str.split().str[0]
         
         # Format IMEI as string without commas
         final_df['IMEI'] = final_df['IMEI'].astype(str).str.replace(',', '', regex=False)
 
         # Columns that come directly from the original sales sheet (pass-through)
-        for col in ['activation date', 'current mop/srp']:
+        for col in ['Activation Date', 'Current MOP/SRP']:
             if col not in final_df.columns:
                 final_df[col] = np.nan
 
@@ -814,37 +814,50 @@ class CalculationEngine:
             return result
         return None
     
-    def validate_data_integrity(self) -> List[str]:
-        """Perform data integrity validations using final column names."""
+    def validate_data_integrity(self) -> Tuple[List[str], Dict[str, List[str]]]:
+        """Perform data integrity validations using final column names.
+        
+        Returns:
+            Tuple of (validation_errors list, error_details dict with IMEIs)
+        """
         validation_errors = []
+        error_details = {}
 
         if self.processed_data is None:
-            return ["No processed data available for validation"]
+            return ["No processed data available for validation"], {}
 
         # Duplicate IMEI check
         duplicates = self.processed_data[self.processed_data.duplicated('IMEI', keep=False)]
         if not duplicates.empty:
+            imei_list = duplicates['IMEI'].tolist()
             validation_errors.append(f"Found {len(duplicates)} duplicate IMEIs")
+            error_details['Duplicate IMEIs'] = imei_list
 
         # Date validation: sell out date should not be earlier than purchase date
-        if 'purchase date' in self.processed_data.columns:
-            sell_dates = pd.to_datetime(self.processed_data['sell out date'], errors='coerce')
-            purchase_dates = pd.to_datetime(self.processed_data['purchase date'], errors='coerce')
+        if 'Purchase Date' in self.processed_data.columns:
+            sell_dates = pd.to_datetime(self.processed_data['Sell Out Date'], errors='coerce')
+            purchase_dates = pd.to_datetime(self.processed_data['Purchase Date'], errors='coerce')
 
-            invalid_dates = self.processed_data[
+            invalid_dates_df = self.processed_data[
                 (purchase_dates.notna()) &
                 (sell_dates.notna()) &
                 (sell_dates < purchase_dates)
             ]
-            if not invalid_dates.empty:
-                validation_errors.append(f"Found {len(invalid_dates)} records where Sell Out Date is before Purchase Date")
+            if not invalid_dates_df.empty:
+                imei_list = invalid_dates_df['IMEI'].tolist()
+                validation_errors.append(f"Found {len(invalid_dates_df)} records where Sell Out Date is before Purchase Date")
+                error_details['Invalid Dates (Sell Out before Purchase)'] = imei_list
 
-        missing_models = self.processed_data['master model'].isna().sum()
-        if missing_models > 0:
-            validation_errors.append(f"Found {missing_models} records with missing Master Model")
+        missing_models_df = self.processed_data[self.processed_data['Master Model'].isna()]
+        if not missing_models_df.empty:
+            imei_list = missing_models_df['IMEI'].tolist()
+            validation_errors.append(f"Found {len(missing_models_df)} records with missing Master Model")
+            error_details['Missing Master Model'] = imei_list
 
-        missing_prices = self.processed_data['MOP AT THE TIME OF PURCHASE'].isna().sum()
-        if missing_prices > 0:
-            validation_errors.append(f"Found {missing_prices} records with missing price data")
+        missing_prices_df = self.processed_data[self.processed_data['MOP at the Time of Purchase'].isna()]
+        if not missing_prices_df.empty:
+            imei_list = missing_prices_df['IMEI'].tolist()
+            validation_errors.append(f"Found {len(missing_prices_df)} records with missing price data")
+            error_details['Missing Price Data'] = imei_list
 
-        return validation_errors
+        return validation_errors, error_details

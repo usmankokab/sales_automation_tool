@@ -37,10 +37,8 @@ class DataLoader:
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=0)
                     elif sheet_name.lower() == 'scheme':
                         # Scheme sheet: try to detect header row automatically
-                        # Read first few rows to find where actual data starts
                         temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
                         
-                        # Find the row that contains 'Master Model' or 'master model'
                         header_row = 0
                         for idx, row in temp_df.iterrows():
                             row_str = ' '.join([str(val).lower() for val in row if pd.notna(val)])
@@ -48,14 +46,37 @@ class DataLoader:
                                 header_row = idx
                                 break
                         
-                        # Now load with correct header row
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
                         logger.info(f"Scheme sheet loaded with header at row {header_row}")
-                    elif sheet_name.lower() in ['sales', 'price list']:
-                        # These sheets have headers on row 0
-                        df = pd.read_excel(xl, sheet_name=sheet_name, header=0)
+                    elif 'sales' in sheet_name.lower():
+                        # Sales sheet: detect header row automatically
+                        temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
+                        
+                        header_row = 0
+                        for idx, row in temp_df.iterrows():
+                            row_str = ' '.join([str(val).lower() for val in row if pd.notna(val)])
+                            if 'imei' in row_str or 'master model' in row_str or 'sell out' in row_str:
+                                header_row = idx
+                                logger.info(f"Sales sheet header detected at row {header_row}")
+                                break
+                        
+                        df = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
+                        logger.info(f"Sales sheet loaded with header at row {header_row}, shape: {df.shape}")
+                    elif 'price' in sheet_name.lower():
+                        # Price list: detect header row automatically
+                        temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
+                        
+                        header_row = 0
+                        for idx, row in temp_df.iterrows():
+                            row_str = ' '.join([str(val).lower() for val in row if pd.notna(val)])
+                            if 'master model' in row_str or 'model' in row_str:
+                                header_row = idx
+                                break
+                        
+                        df = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
+                        logger.info(f"Price list loaded with header at row {header_row}")
                     else:
-                        # Other sheets (like pivot) may not have structured data
+                        # Other sheets
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
 
                     sheets_data[sheet_name.lower()] = df
@@ -86,47 +107,51 @@ class DataLoader:
 
         # Extract sales data - try multiple possible sheet names
         sales_data = None
-        for sheet_name in ['sales', 'Sales', 'SALES']:
-            if sheet_name in workbook_data and not workbook_data[sheet_name].empty:
+        for sheet_name in workbook_data.keys():
+            if 'sales' in sheet_name.lower():
                 sales_data = workbook_data[sheet_name]
                 logger.info(f"Found sales data in sheet: {sheet_name}")
                 break
 
         if sales_data is None or sales_data.empty:
-            raise ValueError("Sales sheet ('sales') not found or empty in workbook")
+            logger.error(f"Sales sheet not found. Available sheets: {list(workbook_data.keys())}")
+            raise ValueError(f"Sales sheet not found in workbook. Available sheets: {list(workbook_data.keys())}")
 
         # Extract price list - try multiple possible sheet names
         price_list = None
-        for sheet_name in ['price list', 'price_list', 'Price List', 'pricelist']:
-            if sheet_name in workbook_data and not workbook_data[sheet_name].empty:
+        for sheet_name in workbook_data.keys():
+            if 'price' in sheet_name.lower():
                 price_list = workbook_data[sheet_name]
                 logger.info(f"Found price list in sheet: {sheet_name}")
                 break
 
         if price_list is None or price_list.empty:
-            raise ValueError("Price List sheet ('price list') not found or empty in workbook")
+            logger.error(f"Price List sheet not found. Available sheets: {list(workbook_data.keys())}")
+            raise ValueError(f"Price List sheet not found in workbook. Available sheets: {list(workbook_data.keys())}")
 
         # Extract scheme file - try multiple possible sheet names
         scheme_file = None
-        for sheet_name in ['scheme', 'Scheme', 'SCHEME']:
-            if sheet_name in workbook_data and not workbook_data[sheet_name].empty:
+        for sheet_name in workbook_data.keys():
+            if 'scheme' in sheet_name.lower():
                 scheme_file = workbook_data[sheet_name]
                 logger.info(f"Found scheme data in sheet: {sheet_name}")
                 break
 
         if scheme_file is None or scheme_file.empty:
-            raise ValueError("Scheme sheet ('scheme') not found or empty in workbook")
+            logger.error(f"Scheme sheet not found. Available sheets: {list(workbook_data.keys())}")
+            raise ValueError(f"Scheme sheet not found in workbook. Available sheets: {list(workbook_data.keys())}")
 
         # Extract drop dump - try multiple possible sheet names
         drop_dump = None
-        for sheet_name in ['drop dump', 'drop_dump', 'Drop Dump', 'dropdump']:
-            if sheet_name in workbook_data and not workbook_data[sheet_name].empty:
+        for sheet_name in workbook_data.keys():
+            if 'drop' in sheet_name.lower():
                 drop_dump = workbook_data[sheet_name]
                 logger.info(f"Found drop dump in sheet: {sheet_name}")
                 break
 
         if drop_dump is None or drop_dump.empty:
-            raise ValueError("Drop Dump sheet ('drop dump') not found or empty in workbook")
+            logger.error(f"Drop Dump sheet not found. Available sheets: {list(workbook_data.keys())}")
+            raise ValueError(f"Drop Dump sheet not found in workbook. Available sheets: {list(workbook_data.keys())}")
 
         logger.info(f"Data shapes - Sales: {sales_data.shape}, Price: {price_list.shape}, Scheme: {scheme_file.shape}, Drop: {drop_dump.shape}")
 
@@ -141,50 +166,95 @@ class DataLoader:
     @staticmethod
     def _standardize_sales_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names for sales data."""
-        # Convert all column names to lowercase first for consistent mapping
-        df.columns = df.columns.str.lower().str.strip()
+        # Convert all column names to strings first, then lowercase for consistent mapping
+        df.columns = df.columns.astype(str).str.lower().str.strip()
+        
+        logger.info(f"Sales sheet original columns: {list(df.columns)}")
 
         column_mapping = {
             'imei': 'IMEI',
             'sell out date': 'Sell_Out_Date',
+            'sellout date': 'Sell_Out_Date',
+            'sell_out_date': 'Sell_Out_Date',
             'master modal': 'Master_Model',
             'master_modal': 'Master_Model',
             'master model': 'Master_Model',
+            'mastermodel': 'Master_Model',
+            'master_model': 'Master_Model',
             'distibutor': 'Distributor',
             'distributor': 'Distributor',
             'purchase date': 'Purchase_Date',
+            'purchasedate': 'Purchase_Date',
+            'purchase_date': 'Purchase_Date',
             'purchase price': 'Purchase_Price',
+            'purchaseprice': 'Purchase_Price',
+            'purchase_price': 'Purchase_Price',
             'bill less in invoice': 'Current_Month_Invoice_Price',
             'bill less in invoice ': 'Current_Month_Invoice_Price',
+            'current month invoice price': 'Current_Month_Invoice_Price',
             'invoice price (pre gst amount': 'Current_Month_Pre_GST_Invoice_Price',
             'invoice price (pre gst amount)': 'Current_Month_Pre_GST_Invoice_Price',
+            'current month pre-gst of invoice price': 'Current_Month_Pre_GST_Invoice_Price',
             'series': 'SERIES',
             'drop': 'Original_Drop',  # Rename existing drop column to avoid conflicts
             'current mop/srp': 'current mop/srp',  # Keep as-is for price variable selection
+            'activation date': 'activation date',
         }
 
         df = df.rename(columns=column_mapping)
+        
+        logger.info(f"Sales sheet columns after mapping: {list(df.columns)}")
 
-        # Ensure required columns exist
+        # Ensure required columns exist - if not found, try fuzzy matching
         required_cols = ['IMEI', 'Sell_Out_Date', 'Master_Model', 'Distributor']
         missing_cols = []
+        
         for col in required_cols:
             if col not in df.columns:
                 missing_cols.append(col)
+                # Try to find similar columns by partial matching
+                if col == 'IMEI':
+                    for c in df.columns:
+                        if 'imei' in str(c).lower():
+                            df = df.rename(columns={c: 'IMEI'})
+                            logger.info(f"Mapped '{c}' to 'IMEI'")
+                            missing_cols.remove(col)
+                            break
+                elif col == 'Sell_Out_Date':
+                    for c in df.columns:
+                        if 'sell' in str(c).lower() and 'date' in str(c).lower():
+                            df = df.rename(columns={c: 'Sell_Out_Date'})
+                            logger.info(f"Mapped '{c}' to 'Sell_Out_Date'")
+                            missing_cols.remove(col)
+                            break
+                elif col == 'Master_Model':
+                    for c in df.columns:
+                        if ('master' in str(c).lower() or 'model' in str(c).lower()) and 'mop' not in str(c).lower():
+                            df = df.rename(columns={c: 'Master_Model'})
+                            logger.info(f"Mapped '{c}' to 'Master_Model'")
+                            missing_cols.remove(col)
+                            break
+                elif col == 'Distributor':
+                    for c in df.columns:
+                        if 'distrib' in str(c).lower():
+                            df = df.rename(columns={c: 'Distributor'})
+                            logger.info(f"Mapped '{c}' to 'Distributor'")
+                            missing_cols.remove(col)
+                            break
 
         if missing_cols:
-            logger.warning(f"Required columns not found in sales data: {missing_cols}")
-            # Try to find similar columns
-            for missing in missing_cols:
-                similar_cols = [c for c in df.columns if missing.lower() in c.lower()]
-                if similar_cols:
-                    logger.info(f"Using '{similar_cols[0]}' for '{missing}'")
+            logger.error(f"Required columns still missing after fuzzy matching: {missing_cols}")
+            logger.error(f"Available columns: {list(df.columns)}")
+            raise ValueError(f"Missing required columns in sales data: {missing_cols}. Available columns: {list(df.columns)[:10]}")
 
         return df
 
     @staticmethod
     def _standardize_price_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names for price list."""
+        # Convert all column names to strings first
+        df.columns = df.columns.astype(str)
+        
         column_mapping = {
             'Master Model': 'Master_Model',
             'master model': 'Master_Model',
@@ -204,8 +274,8 @@ class DataLoader:
     @staticmethod
     def _standardize_scheme_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names for scheme file."""
-        # Lowercase all columns first for consistent matching
-        df.columns = df.columns.str.lower().str.strip()
+        # Convert all column names to strings first, then lowercase for consistent matching
+        df.columns = df.columns.astype(str).str.lower().str.strip()
         
         logger.info(f"Scheme columns after lowercase: {list(df.columns)}")
 
@@ -247,6 +317,7 @@ class DataLoader:
             'flat_scheme': 'Flat_Scheme',
             'flat': 'Flat_Scheme',
             'flat payout': 'Flat_Scheme',
+            'flatschme': 'Flat_Scheme',
             'condition-1': 'Condition_1',
             'condition -1': 'Condition_1',
             'condition_1': 'Condition_1',
@@ -294,8 +365,8 @@ class DataLoader:
     @staticmethod
     def _standardize_drop_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names for drop dump."""
-        # Convert all column names to lowercase for consistent mapping
-        df.columns = df.columns.str.lower().str.strip()
+        # Convert all column names to strings first, then lowercase for consistent mapping
+        df.columns = df.columns.astype(str).str.lower().str.strip()
 
         column_mapping = {
             'imei': 'IMEI',
@@ -447,6 +518,10 @@ class DataLoader:
         header_font = Font(name='Calibri', size=12, bold=True, color='FFFFFF')
         header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
         header_alignment = Alignment(horizontal='center', vertical='center')
+        
+        total_font = Font(name='Calibri', size=11, bold=True, color='000000')
+        total_fill = PatternFill(start_color='FFD966', end_color='FFD966', fill_type='solid')
+        total_alignment = Alignment(horizontal='right', vertical='center')
 
         data_font = Font(name='Calibri', size=10)
         data_alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -471,9 +546,29 @@ class DataLoader:
         # Add metadata
         ws['A2'] = f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         ws['A2'].font = Font(name='Calibri', size=9, italic=True)
-
-        # Write headers
+        
+        # Calculate totals for numeric columns
         headers = df.columns.tolist()
+        totals_row = []
+        for col in headers:
+            if df[col].dtype in ['int64', 'float64']:
+                total_val = df[col].sum()
+                totals_row.append(total_val)
+            else:
+                totals_row.append('')
+        
+        # Write totals row (row 3)
+        totals_row[0] = 'TOTAL'  # First column shows "TOTAL" label
+        for col_num, total_val in enumerate(totals_row, 1):
+            cell = ws.cell(row=3, column=col_num, value=total_val)
+            cell.font = total_font
+            cell.fill = total_fill
+            cell.alignment = total_alignment
+            cell.border = border
+            if isinstance(total_val, (int, float)):
+                cell.number_format = '#,##0.00'
+
+        # Write headers (row 4)
         for col_num, header in enumerate(headers, 1):
             cell = ws.cell(row=4, column=col_num, value=header)
             cell.font = header_font
@@ -481,7 +576,7 @@ class DataLoader:
             cell.alignment = header_alignment
             cell.border = border
 
-        # Write data with formatting
+        # Write data with formatting (starting from row 5)
         for row_num, row in enumerate(df.itertuples(index=False), 5):
             # Alternate row colors
             if row_num % 2 == 0:
@@ -497,7 +592,7 @@ class DataLoader:
                 cell.fill = row_fill
 
                 # Apply data type specific formatting
-                column_name = str(headers[col_num-1])  # Ensure column name is string
+                column_name = str(headers[col_num-1])
                 DataLoader._format_cell_value(cell, value, column_name)
 
         # Auto-adjust column widths
@@ -507,7 +602,7 @@ class DataLoader:
                 len(str(header)),
                 max([len(str(row[col_num-1])) for row in df.itertuples(index=False)] + [0])
             )
-            adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+            adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column_letter].width = adjusted_width
 
         # Freeze header row

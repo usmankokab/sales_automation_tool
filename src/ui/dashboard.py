@@ -276,15 +276,26 @@ class SIATDashboard:
             st.sidebar.markdown("### 📋 Workbook Contents")
             try:
                 workbook_data = self.data_loader.load_workbook(self.temp_workbook_path)
+                
+                # Show all sheets found
+                st.sidebar.write("**Sheets found:**")
                 for sheet_name, df in workbook_data.items():
-                    st.sidebar.write(f"• **{sheet_name.title()}**: {df.shape[0]} rows, {df.shape[1]} columns")
+                    st.sidebar.write(f"• **{sheet_name}**: {df.shape[0]} rows, {df.shape[1]} columns")
 
                 # Extract data sources for processing
-                self.sales_data, self.price_list, self.scheme_file, self.drop_dump = \
-                    self.data_loader.extract_data_sources(workbook_data)
-
-                # Save extracted data to session state
-                st.session_state.workbook_data = workbook_data
+                try:
+                    self.sales_data, self.price_list, self.scheme_file, self.drop_dump = \
+                        self.data_loader.extract_data_sources(workbook_data)
+                    
+                    # Save extracted data to session state
+                    st.session_state.workbook_data = workbook_data
+                    
+                    st.sidebar.success("✅ All required sheets loaded successfully!")
+                except ValueError as ve:
+                    st.sidebar.error(f"❌ Error: {str(ve)}")
+                    st.error(f"**Sheet Loading Error:** {str(ve)}")
+                    st.info("**Required sheets:** Sales, Price List, Scheme, Drop Dump")
+                    return
 
                 logger.info(f"Data extracted - sales: {self.sales_data.shape if self.sales_data is not None else None}, " +
                            f"price: {self.price_list.shape if self.price_list is not None else None}, " +
