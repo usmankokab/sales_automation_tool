@@ -1104,8 +1104,15 @@ class SIATDashboard:
 
         st.header("🔍 Processing Summary & Validation")
 
-        validation_errors = self.calculation_engine.validate_data_integrity()
-        processing_errors = self.calculation_engine.errors
+        # Get validation results (returns tuple: errors_list, error_details_dict)
+        validation_result = st.session_state.calculation_engine.validate_data_integrity()
+        if isinstance(validation_result, tuple):
+            validation_errors, error_details = validation_result
+        else:
+            validation_errors = validation_result
+            error_details = {}
+        
+        processing_errors = st.session_state.calculation_engine.errors
 
         # Summary metrics
         col1, col2, col3, col4 = st.columns(4)
@@ -1119,7 +1126,6 @@ class SIATDashboard:
             st.metric("Warnings", warning_count)
 
         with col3:
-            # Calculate success based on data completeness
             complete_records = len(st.session_state.processed_data[
                 (st.session_state.processed_data['Master Model'].notna()) &
                 (st.session_state.processed_data['Sell Out Date'].notna()) &
@@ -1131,7 +1137,7 @@ class SIATDashboard:
             total_processed = len(st.session_state.processed_data)
             st.metric("Total Processed", total_processed)
 
-        # Detailed logs
+        # Detailed logs with IMEI tracking
         if validation_errors or processing_errors:
             with st.expander("📋 Detailed Logs", expanded=False):
                 if processing_errors:
@@ -1149,9 +1155,26 @@ class SIATDashboard:
                             st.warning(f"{i}. {error}")
                         else:
                             st.error(f"{i}. {error}")
+                    
+                    # Display error details with IMEIs if available
+                    if error_details:
+                        st.subheader("📝 Affected IMEIs by Error Type")
+                        for error_type, imei_list in error_details.items():
+                            with st.expander(f"{error_type} ({len(imei_list)} IMEIs)", expanded=False):
+                                if len(imei_list) <= 100:
+                                    st.write(", ".join([str(imei) for imei in imei_list]))
+                                else:
+                                    st.write(", ".join([str(imei) for imei in imei_list[:100]]))
+                                    st.info(f"Showing first 100 of {len(imei_list)} IMEIs. Download full list below.")
+                                
+                                imei_csv = "\n".join([str(imei) for imei in imei_list])
+                                st.download_button(
+                                    label=f"Download {error_type} IMEIs",
+                                    data=imei_csv,
+                                    file_name=f"{error_type.replace(' ', '_')}_IMEIs.txt",
+                                    mime="text/plain"
+                                )
 
-            # Error summary table
-            # Calculate successful records based on data completeness
             successful_records = len(st.session_state.processed_data[
                 (st.session_state.processed_data['Master Model'].notna()) &
                 (st.session_state.processed_data['Sell Out Date'].notna()) &
@@ -1174,7 +1197,6 @@ class SIATDashboard:
             st.success("✅ **All calculations completed successfully with no errors!**")
             st.balloons()
 
-        # Data quality score
         st.subheader("⭐ Data Quality Score")
         completeness_score = (
             st.session_state.processed_data['MOP at the Time of Purchase'].notna().mean() +
