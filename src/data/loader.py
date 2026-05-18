@@ -197,8 +197,8 @@ class DataLoader:
             'current month pre-gst of invoice price': 'Current_Month_Pre_GST_Invoice_Price',
             'series': 'SERIES',
             'drop': 'Original_Drop',  # Rename existing drop column to avoid conflicts
-            'current mop/srp': 'current mop/srp',  # Keep as-is for price variable selection
-            'activation date': 'activation date',
+            'current mop/srp': 'Current_MOP_SRP',  # Standardized name
+            'activation date': 'Activation_Date',  # Standardized name
         }
 
         df = df.rename(columns=column_mapping)
@@ -252,20 +252,28 @@ class DataLoader:
     @staticmethod
     def _standardize_price_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names for price list."""
-        # Convert all column names to strings first
-        df.columns = df.columns.astype(str)
+        # Convert all column names to strings first, then lowercase
+        df.columns = df.columns.astype(str).str.lower().str.strip()
         
         column_mapping = {
-            'Master Model': 'Master_Model',
             'master model': 'Master_Model',
+            'master_model': 'Master_Model',
+            'mastermodel': 'Master_Model',
+            'master': 'Master_Model',
+            'model': 'Master_Model',
             'valid from': 'Valid_From',
             'valid_from': 'Valid_From',
+            'validfrom': 'Valid_From',
             'valid to': 'Valid_To',
             'valid_to': 'Valid_To',
-            'Net Purchase 4%': 'Purchase_Price',
+            'validto': 'Valid_To',
+            'net purchase 4%': 'Purchase_Price',
             'purchase_price': 'Purchase_Price',
+            'purchase price': 'Purchase_Price',
+            'purchaseprice': 'Purchase_Price',
             'pre gst price': 'Pre_GST_Price',
             'pre_gst_price': 'Pre_GST_Price',
+            'pregstprice': 'Pre_GST_Price',
         }
 
         df = df.rename(columns=column_mapping)

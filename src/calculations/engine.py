@@ -40,6 +40,30 @@ class CalculationEngine:
         # Initialize separate fuzzy matching caches for price list and scheme
         self._price_model_cache = {}
         self._scheme_model_cache = {}
+    
+    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: str, default=None):
+        """Get column value with case-insensitive matching.
+        
+        Args:
+            df: DataFrame to search
+            column_name: Column name to find (case-insensitive)
+            default: Default value if column not found
+            
+        Returns:
+            Column data if found, default otherwise
+        """
+        # First try exact match
+        if column_name in df.columns:
+            return df[column_name]
+        
+        # Try case-insensitive match
+        column_name_lower = column_name.lower()
+        for col in df.columns:
+            if col.lower() == column_name_lower:
+                return df[col]
+        
+        # Not found, return default
+        return default
 
     def run_calculations(self) -> Tuple[pd.DataFrame, List[str]]:
         """
@@ -277,7 +301,7 @@ class CalculationEngine:
         price_column_mapping = {
             "Current Month Invoice Price": "Current_Month_Invoice_Price",
             "Purchase Price": "Purchase_Price",
-            "Current MOP/SRP": "current_mop_srp"  # This will be mapped from sales sheet
+            "Current MOP/SRP": "Current_MOP_SRP"  # Use standardized name
         }
         
         # Get the actual column name based on user selection
@@ -286,24 +310,18 @@ class CalculationEngine:
         if not selected_column:
             raise ValueError(f"Invalid price variable selection: {self.price_variable_column}")
         
-        # Handle Current MOP/SRP - need to check if it exists in dataframe
-        if selected_column == "current_mop_srp":
-            # Try to find the column with various possible names
-            possible_names = ['current mop/srp', 'Current MOP/SRP', 'current_mop_srp', 'Current_MOP_SRP']
-            found_column = None
-            for col_name in possible_names:
-                if col_name in df.columns:
-                    found_column = col_name
+        # Ensure the selected column exists (case-insensitive check)
+        if selected_column not in df.columns:
+            # Try case-insensitive search
+            found = False
+            for col in df.columns:
+                if col.lower() == selected_column.lower():
+                    selected_column = col
+                    found = True
                     break
             
-            if found_column:
-                selected_column = found_column
-            else:
-                raise ValueError(f"Current MOP/SRP column not found in sales data. Available columns: {list(df.columns)}")
-        
-        # Ensure the selected column exists
-        if selected_column not in df.columns:
-            raise ValueError(f"{selected_column} column not found in sales data. Available columns: {list(df.columns)}")
+            if not found:
+                raise ValueError(f"{selected_column} column not found in sales data. Available columns: {list(df.columns)}")
 
         # Get the price variable value for each row
         price_variable = df[selected_column].fillna(0)
@@ -433,78 +451,84 @@ class CalculationEngine:
             )
             applicable_schemes = self.scheme_file[mask]
 
+            # Initialize aggregated values
             pct_scheme_1 = pct_scheme_2 = pct_scheme_3 = pct_scheme_4 = 0
+            pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = 0
             flat_scheme = 0
 
+            # Loop through ALL matching scheme entries and aggregate
             if not applicable_schemes.empty:
-                scheme = applicable_schemes.iloc[0]
-                
-                # Check CONDITION-1 for PCT Scheme-1 A/B logic
-                condition_1 = str(scheme.get('Condition_1', '')).strip().lower()
-                has_price_slab = condition_1 in ['price slab', 'priceslab', 'price_slab']
-                
-                # Check if A/B columns exist
-                has_a_col = 'Pct_Scheme_1_A' in self.scheme_file.columns
-                has_b_col = 'Pct_Scheme_1_B' in self.scheme_file.columns
-                
-                # Get PCT Scheme-1 value based on conditions
-                if has_price_slab and has_a_col and has_b_col:
-                    # CONDITION-1 = "PRICE SLAB" - use threshold logic
-                    if self.purchase_price_threshold is not None:
-                        if purchase_price <= self.purchase_price_threshold:
-                            pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                for _, scheme in applicable_schemes.iterrows():
+                    # Check CONDITION-1 for PCT Scheme-1 A/B logic
+                    condition_1 = str(scheme.get('Condition_1', '')).strip().lower()
+                    has_price_slab = condition_1 in ['price slab', 'priceslab', 'price_slab']
+                    
+                    # Check if A/B columns exist
+                    has_a_col = 'Pct_Scheme_1_A' in self.scheme_file.columns
+                    has_b_col = 'Pct_Scheme_1_B' in self.scheme_file.columns
+                    
+                    # Get PCT Scheme-1 value based on conditions
+                    if has_price_slab and has_a_col and has_b_col:
+                        # CONDITION-1 = "PRICE SLAB" - use threshold logic
+                        if self.purchase_price_threshold is not None:
+                            if purchase_price <= self.purchase_price_threshold:
+                                pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                            else:
+                                pct_scheme_1_raw = scheme.get('Pct_Scheme_1_B', 0) or 0
                         else:
-                            pct_scheme_1_raw = scheme.get('Pct_Scheme_1_B', 0) or 0
-                    else:
-                        # Threshold not provided but A/B exist - this should be caught in validation
+                            # Threshold not provided but A/B exist - this should be caught in validation
+                            pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                    elif has_a_col:
+                        # CONDITION-1 != "PRICE SLAB" or missing - always use A if exists
                         pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
-                elif has_a_col:
-                    # CONDITION-1 != "PRICE SLAB" or missing - always use A if exists
-                    pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
-                else:
-                    # No A/B columns - use original PCT Scheme-1
-                    pct_scheme_1_raw = scheme.get('Pct_Scheme_1', 0) or 0
-                
-                # Get other scheme values
-                pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
-                pct_scheme_3_raw = scheme.get('Pct_Scheme_3', 0) or 0
-                pct_scheme_4_raw = scheme.get('Pct_Scheme_4', 0) or 0
-                
-                # Get flat scheme value
-                _flat = scheme.get('Flat_Scheme', None)
-                flat_scheme = float(_flat) if pd.notna(_flat) else 0
-                
-                # Detect if values are already in decimal format (< 1) or percentage format (>= 1)
-                if pct_scheme_1_raw > 0 and pct_scheme_1_raw < 1:
-                    pct_scheme_1 = pct_scheme_1_raw * 100
-                    pct_scheme_1_calc = pct_scheme_1_raw
-                else:
-                    pct_scheme_1 = pct_scheme_1_raw
-                    pct_scheme_1_calc = pct_scheme_1_raw / 100 if pct_scheme_1_raw > 0 else 0
-                
-                if pct_scheme_2_raw > 0 and pct_scheme_2_raw < 1:
-                    pct_scheme_2 = pct_scheme_2_raw * 100
-                    pct_scheme_2_calc = pct_scheme_2_raw
-                else:
-                    pct_scheme_2 = pct_scheme_2_raw
-                    pct_scheme_2_calc = pct_scheme_2_raw / 100 if pct_scheme_2_raw > 0 else 0
-                
-                if pct_scheme_3_raw > 0 and pct_scheme_3_raw < 1:
-                    pct_scheme_3 = pct_scheme_3_raw * 100
-                    pct_scheme_3_calc = pct_scheme_3_raw
-                else:
-                    pct_scheme_3 = pct_scheme_3_raw
-                    pct_scheme_3_calc = pct_scheme_3_raw / 100 if pct_scheme_3_raw > 0 else 0
-                
-                if pct_scheme_4_raw > 0 and pct_scheme_4_raw < 1:
-                    pct_scheme_4 = pct_scheme_4_raw * 100
-                    pct_scheme_4_calc = pct_scheme_4_raw
-                else:
-                    pct_scheme_4 = pct_scheme_4_raw
-                    pct_scheme_4_calc = pct_scheme_4_raw / 100 if pct_scheme_4_raw > 0 else 0
-            else:
-                pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = 0
-                flat_scheme = 0
+                    else:
+                        # No A/B columns - use original PCT Scheme-1
+                        pct_scheme_1_raw = scheme.get('Pct_Scheme_1', 0) or 0
+                    
+                    # Get other scheme values
+                    pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
+                    pct_scheme_3_raw = scheme.get('Pct_Scheme_3', 0) or 0
+                    pct_scheme_4_raw = scheme.get('Pct_Scheme_4', 0) or 0
+                    
+                    # Get flat scheme value
+                    _flat = scheme.get('Flat_Scheme', None)
+                    flat_scheme_entry = float(_flat) if pd.notna(_flat) else 0
+                    
+                    # Convert to percentage format and calculation format
+                    # PCT Scheme-1
+                    if pct_scheme_1_raw > 0 and pct_scheme_1_raw < 1:
+                        pct_scheme_1 += pct_scheme_1_raw * 100
+                        pct_scheme_1_calc += pct_scheme_1_raw
+                    else:
+                        pct_scheme_1 += pct_scheme_1_raw
+                        pct_scheme_1_calc += pct_scheme_1_raw / 100 if pct_scheme_1_raw > 0 else 0
+                    
+                    # PCT Scheme-2
+                    if pct_scheme_2_raw > 0 and pct_scheme_2_raw < 1:
+                        pct_scheme_2 += pct_scheme_2_raw * 100
+                        pct_scheme_2_calc += pct_scheme_2_raw
+                    else:
+                        pct_scheme_2 += pct_scheme_2_raw
+                        pct_scheme_2_calc += pct_scheme_2_raw / 100 if pct_scheme_2_raw > 0 else 0
+                    
+                    # PCT Scheme-3
+                    if pct_scheme_3_raw > 0 and pct_scheme_3_raw < 1:
+                        pct_scheme_3 += pct_scheme_3_raw * 100
+                        pct_scheme_3_calc += pct_scheme_3_raw
+                    else:
+                        pct_scheme_3 += pct_scheme_3_raw
+                        pct_scheme_3_calc += pct_scheme_3_raw / 100 if pct_scheme_3_raw > 0 else 0
+                    
+                    # PCT Scheme-4
+                    if pct_scheme_4_raw > 0 and pct_scheme_4_raw < 1:
+                        pct_scheme_4 += pct_scheme_4_raw * 100
+                        pct_scheme_4_calc += pct_scheme_4_raw
+                    else:
+                        pct_scheme_4 += pct_scheme_4_raw
+                        pct_scheme_4_calc += pct_scheme_4_raw / 100 if pct_scheme_4_raw > 0 else 0
+                    
+                    # Aggregate flat scheme
+                    flat_scheme += flat_scheme_entry
 
             # Step 8: pct amount = pct_scheme_calc * pre_gst_price
             pct_incentive_1 = pct_scheme_1_calc * pre_gst_price
@@ -677,6 +701,12 @@ class CalculationEngine:
         final_df['Purchase Price'] = final_df.get('Purchase_Price', np.nan)
         final_df['Current Month Invoice Price'] = final_df.get('Current_Month_Invoice_Price', np.nan)
         final_df['Current Month Pre-GST of Invoice Price'] = final_df.get('Current_Month_Pre_GST_Invoice_Price', np.nan)
+        
+        # Current MOP/SRP - use standardized column name
+        final_df['Current MOP/SRP'] = final_df.get('Current_MOP_SRP', np.nan)
+        
+        # Activation Date - use standardized column name
+        final_df['Activation Date'] = final_df.get('Activation_Date', np.nan)
 
         # SERIES: use original value from input if available, otherwise extract from master model
         if 'SERIES' in final_df.columns and final_df['SERIES'].notna().any():
@@ -688,11 +718,6 @@ class CalculationEngine:
         
         # Format IMEI as string without commas
         final_df['IMEI'] = final_df['IMEI'].astype(str).str.replace(',', '', regex=False)
-
-        # Columns that come directly from the original sales sheet (pass-through)
-        for col in ['Activation Date', 'Current MOP/SRP']:
-            if col not in final_df.columns:
-                final_df[col] = np.nan
 
         # Keep only final columns in correct order
         final_df = final_df[final_columns]
@@ -774,12 +799,23 @@ class CalculationEngine:
 
         pivot_rows = []
 
+        # Group by distributor (case-insensitive column lookup)
+        distributor_col = None
+        for col in self.processed_data.columns:
+            if col.lower() in ['distributor', 'distibutor']:
+                distributor_col = col
+                break
+        
+        if distributor_col is None:
+            logger.error("Distributor column not found in processed data")
+            return pd.DataFrame()
+
         # Group by distributor
-        for distributor in self.processed_data['distibutor'].unique():
+        for distributor in self.processed_data[distributor_col].unique():
             if pd.isna(distributor):
                 continue
 
-            dist_data = self.processed_data[self.processed_data['distibutor'] == distributor]
+            dist_data = self.processed_data[self.processed_data[distributor_col] == distributor]
 
             # Check each scheme type
             for scheme_name, amount_col in scheme_mappings:
