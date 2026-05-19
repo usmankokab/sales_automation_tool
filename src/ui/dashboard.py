@@ -619,7 +619,7 @@ class SIATDashboard:
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">💰 Total Incentives</div>
-                <div class="metric-value">₹{total_incentive:,.0f}</div>
+                <div class="metric-value">{total_incentive:,.0f}</div>
                 <div>Recovery Amount</div>
             </div>
             """, unsafe_allow_html=True)
@@ -628,7 +628,7 @@ class SIATDashboard:
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">🏢 Net Landing Cost</div>
-                <div class="metric-value">₹{total_nlc:,.0f}</div>
+                <div class="metric-value">{total_nlc:,.0f}</div>
                 <div>After Incentives</div>
             </div>
             """, unsafe_allow_html=True)
@@ -638,7 +638,7 @@ class SIATDashboard:
             <div class="metric-card">
                 <div class="metric-label">📈 Total Margin</div>
                 <div class="metric-value">{avg_margin_pct:.1f}%</div>
-                <div>₹{total_margin:,.0f} earned</div>
+                <div>{total_margin:,.0f} earned</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -656,7 +656,7 @@ class SIATDashboard:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.info(f"🔻 **Drop Impact**: ₹{drops_value:,.0f} total drop value across {drops_count} devices")
+            st.info(f"🔻 **Drop Impact**: {drops_value:,.0f} total drop value across {drops_count} devices")
 
         with col2:
             successful_matches = st.session_state.processed_data['MOP at the Time of Purchase'].notna().sum()
@@ -665,7 +665,7 @@ class SIATDashboard:
 
         with col3:
             avg_incentive_per_device = total_incentive / total_records if total_records > 0 else 0
-            st.info(f"🎯 **Avg Incentive/Device**: ₹{avg_incentive_per_device:,.0f}")
+            st.info(f"🎯 **Avg Incentive/Device**: {avg_incentive_per_device:,.0f}")
     
     def _display_charts(self):
         """Display professional interactive charts and visualizations."""
@@ -772,8 +772,8 @@ class SIATDashboard:
                 y='TOTAL PCT SCHEME + FLAT PAYOUT',
                 title="Price vs Net Landing Cost",
                 labels={
-                    'MOP at the Time of Purchase': 'Device Price (₹)',
-                    'TOTAL PCT SCHEME + FLAT PAYOUT': 'Net Landing Cost (₹)'
+                    'MOP at the Time of Purchase': 'Device Price',
+                    'TOTAL PCT SCHEME + FLAT PAYOUT': 'Net Landing Cost'
                 },
                 trendline="ols",
                 color='Drop',
@@ -789,7 +789,7 @@ class SIATDashboard:
                 x=margin_data,
                 nbins=30,
                 title="Margin Distribution",
-                labels={'x': 'Margin (₹)'},
+                labels={'x': 'Margin'},
                 color_discrete_sequence=['#2ca02c']
             )
             fig.update_layout(showlegend=False)
@@ -873,7 +873,7 @@ class SIATDashboard:
                     title="Total Scheme Amount by Distributor",
                     labels={
                         'Distributor Name': 'Distributor',
-                        'Final AMT': 'Total Scheme Amount (₹)'
+                        'Final AMT': 'Total Scheme Amount'
                     },
                     color='Final AMT',
                     color_continuous_scale='Viridis'
@@ -891,7 +891,7 @@ class SIATDashboard:
                     title="Scheme Breakdown by Distributor",
                     labels={
                         'Distributor Name': 'Distributor',
-                        'Final AMT': 'Scheme Amount (₹)',
+                        'Final AMT': 'Scheme Amount',
                         'Scheme Name': 'Scheme Type'
                     },
                     barmode='stack'
@@ -911,7 +911,7 @@ class SIATDashboard:
                     title="Top 10 Models by Incentive Value",
                     labels={
                         'Model': 'Device Model',
-                        'Total_Incentives': 'Total Incentives (₹)'
+                        'Total_Incentives': 'Total Incentives'
                     },
                     color_discrete_sequence=['#e377c2']
                 )
@@ -1025,7 +1025,7 @@ class SIATDashboard:
                 for col in numeric_cols:
                     if col in ['MOP at the Time of Purchase', 'Drop', 'Total Scheme Received', 'TOTAL PCT SCHEME + FLAT PAYOUT', 'FINAL PRICE FOR CALCULATION',
                               'Current Month Invoice Price', 'Current Month Pre-GST of Invoice Price']:
-                        display_df[col] = display_df[col].apply(lambda x: f"₹{x:,.0f}" if pd.notna(x) else "N/A")
+                        display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "N/A")
 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
@@ -1046,7 +1046,7 @@ class SIATDashboard:
                     st.metric("Total Distributors", unique_distributors)
                 with col2:
                     total_scheme = st.session_state.pivot_data['Final AMT'].sum()
-                    st.metric("Total Scheme Amount", f"₹{total_scheme:,.2f}")
+                    st.metric("Total Scheme Amount", f"{total_scheme:,.2f}")
 
         with tab3:
             st.subheader("Model Performance Analysis")
@@ -1066,7 +1066,7 @@ class SIATDashboard:
                 display_model = model_summary.copy()
                 for col in ['Total_Incentives', 'Total_NLC', 'Total_Final_Price', 'Total_Margin']:
                     if col in display_model.columns:
-                        display_model[col] = display_model[col].apply(lambda x: f"₹{x:,.2f}")
+                        display_model[col] = display_model[col].apply(lambda x: f"{x:,.2f}")
                 st.dataframe(display_model, use_container_width=True, hide_index=True)
 
     def _create_download_button(self):

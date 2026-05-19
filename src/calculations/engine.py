@@ -209,7 +209,7 @@ class CalculationEngine:
         drop_count = df['Has_Drop'].sum()
         total_drop_value = df['Drop_Amount'].sum()
 
-        logger.info(f"Found {drop_count} drops with total value ₹{total_drop_value:,.0f} out of {len(df)} records")
+        logger.info(f"Found {drop_count} drops with total value {total_drop_value:,.0f} out of {len(df)} records")
         return df
     
     def _step_3_4_price_match(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -556,7 +556,7 @@ class CalculationEngine:
         df = pd.concat([df, scheme_results], axis=1)
 
         total_schemes = (df['Total_Pct_Incentive'] + df['Total_Flat_Incentive']).sum()
-        logger.info(f"Applied schemes with total incentive value ₹{total_schemes:,.0f}")
+        logger.info(f"Applied schemes with total incentive value {total_schemes:,.0f}")
         return df
     
     def _step_9_incentive_sum(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -573,7 +573,7 @@ class CalculationEngine:
             df['Total_Flat_Incentive'] = 0
 
         df['Total_Incentive_Received'] = df['Total_Pct_Incentive'] + df['Total_Flat_Incentive']
-        logger.info(f"Total incentives calculated: ₹{df['Total_Incentive_Received'].sum():,.0f}")
+        logger.info(f"Total incentives calculated: {df['Total_Incentive_Received'].sum():,.0f}")
 
         return df
 
@@ -622,7 +622,7 @@ class CalculationEngine:
         df['NLC'] = df['Calculated_NLC']
         df['Margin'] = df['Calculated_Margin']
 
-        logger.info(f"NLC calculations completed. Total NLC: ₹{df['Calculated_NLC'].sum():,.0f}")
+        logger.info(f"NLC calculations completed. Total NLC: {df['Calculated_NLC'].sum():,.0f}")
         return df
 
     def _step_11_final_validation(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -822,13 +822,12 @@ class CalculationEngine:
                 # Sum the amount for this scheme
                 total_amount = dist_data[amount_col].sum()
 
-                # Only include if amount > 0 (exclude zero and empty)
-                if total_amount > 0:
-                    pivot_rows.append({
-                        'Distributor Name': distributor,
-                        'Scheme Name': scheme_name,
-                        'Final AMT': round(total_amount, 2)
-                    })
+                # Include all schemes, even if amount is 0
+                pivot_rows.append({
+                    'Distributor Name': distributor,
+                    'Scheme Name': scheme_name,
+                    'Final AMT': round(total_amount, 2)
+                })
 
         # Create DataFrame
         pivot = pd.DataFrame(pivot_rows)
