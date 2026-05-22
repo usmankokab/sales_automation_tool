@@ -46,6 +46,15 @@ class CalculationEngine:
         # Initialize separate fuzzy matching caches for price list and scheme
         self._price_model_cache = {}
         self._scheme_model_cache = {}
+        
+        # Check if PCT Scheme-5 and PCT Scheme-6 exist in scheme file
+        self.has_pct_scheme_5 = 'Pct_Scheme_5' in self.scheme_file.columns
+        self.has_pct_scheme_6 = 'Pct_Scheme_6' in self.scheme_file.columns
+        
+        if self.has_pct_scheme_5:
+            logger.info("PCT Scheme-5 detected in scheme file")
+        if self.has_pct_scheme_6:
+            logger.info("PCT Scheme-6 detected in scheme file")
     
     def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: str, default=None):
         """Get column value with case-insensitive matching.
@@ -451,6 +460,12 @@ class CalculationEngine:
             df['Pct_Incentive_2'] = 0
             df['Pct_Incentive_3'] = 0
             df['Pct_Incentive_4'] = 0
+            if self.has_pct_scheme_5:
+                df['pct_scheme_5'] = 0
+                df['Pct_Incentive_5'] = 0
+            if self.has_pct_scheme_6:
+                df['pct_scheme_6'] = 0
+                df['Pct_Incentive_6'] = 0
             df['Flat_Incentive'] = 0
             df['Total_Pct_Incentive'] = 0
             df['Total_Flat_Incentive'] = 0
@@ -486,6 +501,14 @@ class CalculationEngine:
                 'Pct_Incentive_1': 0, 'Pct_Incentive_2': 0, 'Pct_Incentive_3': 0, 'Pct_Incentive_4': 0,
                 'Flat_Incentive': 0, 'Total_Pct_Incentive': 0, 'Total_Flat_Incentive': 0
             })
+            
+            # Add PCT Scheme-5 and 6 if they exist
+            if self.has_pct_scheme_5:
+                zero['pct_scheme_5'] = 0
+                zero['Pct_Incentive_5'] = 0
+            if self.has_pct_scheme_6:
+                zero['pct_scheme_6'] = 0
+                zero['Pct_Incentive_6'] = 0
 
             # Check if master model exists
             if not master_model:
@@ -520,8 +543,8 @@ class CalculationEngine:
             applicable_pct_schemes = self.scheme_file[pct_mask]
 
             # Initialize aggregated values
-            pct_scheme_1 = pct_scheme_2 = pct_scheme_3 = pct_scheme_4 = 0
-            pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = 0
+            pct_scheme_1 = pct_scheme_2 = pct_scheme_3 = pct_scheme_4 = pct_scheme_5 = pct_scheme_6 = 0
+            pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = pct_scheme_5_calc = pct_scheme_6_calc = 0
             flat_scheme = 0
 
             # Loop through ALL matching PCT scheme entries and aggregate
@@ -587,9 +610,11 @@ class CalculationEngine:
                         # Non-REDMI or no CONDITION-2: Use regular Pct_Scheme_2
                         pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
                     
-                    # Get other scheme values (unchanged)
+                    # Get other scheme values
                     pct_scheme_3_raw = scheme.get('Pct_Scheme_3', 0) or 0
                     pct_scheme_4_raw = scheme.get('Pct_Scheme_4', 0) or 0
+                    pct_scheme_5_raw = scheme.get('Pct_Scheme_5', 0) or 0 if self.has_pct_scheme_5 else 0
+                    pct_scheme_6_raw = scheme.get('Pct_Scheme_6', 0) or 0 if self.has_pct_scheme_6 else 0
                     
                     # Convert to percentage format and calculation format
                     # PCT Scheme-1
@@ -623,6 +648,24 @@ class CalculationEngine:
                     else:
                         pct_scheme_4 += pct_scheme_4_raw
                         pct_scheme_4_calc += pct_scheme_4_raw / 100 if pct_scheme_4_raw > 0 else 0
+                    
+                    # PCT Scheme-5 (if exists)
+                    if self.has_pct_scheme_5:
+                        if pct_scheme_5_raw > 0 and pct_scheme_5_raw < 1:
+                            pct_scheme_5 += pct_scheme_5_raw * 100
+                            pct_scheme_5_calc += pct_scheme_5_raw
+                        else:
+                            pct_scheme_5 += pct_scheme_5_raw
+                            pct_scheme_5_calc += pct_scheme_5_raw / 100 if pct_scheme_5_raw > 0 else 0
+                    
+                    # PCT Scheme-6 (if exists)
+                    if self.has_pct_scheme_6:
+                        if pct_scheme_6_raw > 0 and pct_scheme_6_raw < 1:
+                            pct_scheme_6 += pct_scheme_6_raw * 100
+                            pct_scheme_6_calc += pct_scheme_6_raw
+                        else:
+                            pct_scheme_6 += pct_scheme_6_raw
+                            pct_scheme_6_calc += pct_scheme_6_raw / 100 if pct_scheme_6_raw > 0 else 0
 
             # For Flat Payout: Apply when sell_date is valid
             if not (pd.isna(sell_date) or isinstance(sell_date, str)):
@@ -683,9 +726,11 @@ class CalculationEngine:
             pct_incentive_2 = pct_scheme_2_calc * scheme_calculation_base
             pct_incentive_3 = pct_scheme_3_calc * scheme_calculation_base
             pct_incentive_4 = pct_scheme_4_calc * scheme_calculation_base
-            total_pct = pct_incentive_1 + pct_incentive_2 + pct_incentive_3 + pct_incentive_4
+            pct_incentive_5 = pct_scheme_5_calc * scheme_calculation_base if self.has_pct_scheme_5 else 0
+            pct_incentive_6 = pct_scheme_6_calc * scheme_calculation_base if self.has_pct_scheme_6 else 0
+            total_pct = pct_incentive_1 + pct_incentive_2 + pct_incentive_3 + pct_incentive_4 + pct_incentive_5 + pct_incentive_6
 
-            return pd.Series({
+            result = {
                 'pct_scheme_1': pct_scheme_1,  # Store as percentage (e.g., 2.5)
                 'pct_scheme_2': pct_scheme_2,
                 'pct_scheme_3': pct_scheme_3,
@@ -697,7 +742,17 @@ class CalculationEngine:
                 'Flat_Incentive': flat_scheme,
                 'Total_Pct_Incentive': total_pct,
                 'Total_Flat_Incentive': flat_scheme
-            })
+            }
+            
+            # Add PCT Scheme-5 and 6 if they exist
+            if self.has_pct_scheme_5:
+                result['pct_scheme_5'] = pct_scheme_5
+                result['Pct_Incentive_5'] = pct_incentive_5
+            if self.has_pct_scheme_6:
+                result['pct_scheme_6'] = pct_scheme_6
+                result['Pct_Incentive_6'] = pct_incentive_6
+            
+            return pd.Series(result)
 
         # Apply scheme calculations
         scheme_results = df.apply(apply_scheme, axis=1)
@@ -800,7 +855,7 @@ class CalculationEngine:
         if missing_models > 0:
             self.errors.append(f"Warning: {missing_models} records have missing Master Model")
 
-        # Define final column order with display names
+        # Define final column order with display names (base columns)
         final_columns = [
             'IMEI',
             'Sell Out Date',
@@ -828,9 +883,23 @@ class CalculationEngine:
             'Amount PCT Scheme-3',
             'PCT Scheme-4',
             'Amount PCT Scheme-4',
+        ]
+        
+        # Dynamically add PCT Scheme-5 and 6 if they exist
+        # Check if the calculation engine has these schemes
+        has_scheme_5 = hasattr(self, 'has_pct_scheme_5') and self.has_pct_scheme_5
+        has_scheme_6 = hasattr(self, 'has_pct_scheme_6') and self.has_pct_scheme_6
+        
+        if has_scheme_5:
+            final_columns.extend(['PCT Scheme-5', 'Amount PCT Scheme-5'])
+        if has_scheme_6:
+            final_columns.extend(['PCT Scheme-6', 'Amount PCT Scheme-6'])
+        
+        # Add final columns
+        final_columns.extend([
             'Total Scheme Received',
             'TOTAL PCT SCHEME + FLAT PAYOUT'
-        ]
+        ])
 
         # Create final dataframe with renamed columns
         final_df = pd.DataFrame()
@@ -869,8 +938,23 @@ class CalculationEngine:
         final_df['PCT Scheme-4'] = df.get('pct_scheme_4', 0)
         final_df['Amount PCT Scheme-4'] = df.get('Pct_Incentive_4', 0).fillna(0).round(0).astype('Int64')
         
+        # Dynamically add PCT Scheme-5 and 6 if they exist
+        if has_scheme_5:
+            final_df['PCT Scheme-5'] = df.get('pct_scheme_5', 0)
+            final_df['Amount PCT Scheme-5'] = df.get('Pct_Incentive_5', 0).fillna(0).round(0).astype('Int64')
+        
+        if has_scheme_6:
+            final_df['PCT Scheme-6'] = df.get('pct_scheme_6', 0)
+            final_df['Amount PCT Scheme-6'] = df.get('Pct_Incentive_6', 0).fillna(0).round(0).astype('Int64')
+        
         # Format percentage columns to show with % symbol
-        for col in ['PCT Scheme-1', 'PCT Scheme-2', 'PCT Scheme-3', 'PCT Scheme-4']:
+        pct_columns = ['PCT Scheme-1', 'PCT Scheme-2', 'PCT Scheme-3', 'PCT Scheme-4']
+        if has_scheme_5:
+            pct_columns.append('PCT Scheme-5')
+        if has_scheme_6:
+            pct_columns.append('PCT Scheme-6')
+        
+        for col in pct_columns:
             if col in final_df.columns:
                 final_df[col] = final_df[col].apply(lambda x: f"{round(x, 2)}%" if pd.notna(x) and x > 0 else ("0%" if pd.notna(x) else ""))
         
@@ -946,14 +1030,22 @@ class CalculationEngine:
 
         logger.info("Generating distributor pivot report...")
 
-        # Define scheme mappings
+        # Define scheme mappings (base schemes)
         scheme_mappings = [
             ('PCT Scheme-1', 'Amount PCT Scheme-1'),
             ('PCT Scheme-2', 'Amount PCT Scheme-2'),
             ('PCT Scheme-3', 'Amount PCT Scheme-3'),
             ('PCT Scheme-4', 'Amount PCT Scheme-4'),
-            ('Flat Payout', 'Flat Payout')
         ]
+        
+        # Dynamically add PCT Scheme-5 and 6 if they exist in processed data
+        if 'Amount PCT Scheme-5' in self.processed_data.columns:
+            scheme_mappings.append(('PCT Scheme-5', 'Amount PCT Scheme-5'))
+        if 'Amount PCT Scheme-6' in self.processed_data.columns:
+            scheme_mappings.append(('PCT Scheme-6', 'Amount PCT Scheme-6'))
+        
+        # Add Flat Payout
+        scheme_mappings.append(('Flat Payout', 'Flat Payout'))
 
         pivot_rows = []
 
