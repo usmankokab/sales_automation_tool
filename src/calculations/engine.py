@@ -549,7 +549,14 @@ class CalculationEngine:
 
             # Loop through ALL matching PCT scheme entries and aggregate
             if not applicable_pct_schemes.empty:
-                for _, scheme in applicable_pct_schemes.iterrows():
+                # Log if multiple schemes are being aggregated
+                if len(applicable_pct_schemes) > 1:
+                    logger.info(f"DEBUG - Multiple scheme entries found for {master_model}: {len(applicable_pct_schemes)} rows will be aggregated")
+                
+                for idx, (_, scheme) in enumerate(applicable_pct_schemes.iterrows(), 1):
+                    # Log scheme values being processed
+                    logger.info(f"DEBUG - Processing scheme row {idx} for {master_model}: PCT-1={scheme.get('Pct_Scheme_1', 0)}, PCT-2={scheme.get('Pct_Scheme_2', 0)}, PCT-3={scheme.get('Pct_Scheme_3', 0)}, PCT-4={scheme.get('Pct_Scheme_4', 0)}")
+                    
                     # ===== PCT SCHEME-1 LOGIC =====
                     condition_1 = str(scheme.get('Condition_1', '')).strip().lower()
                     has_price_slab = condition_1 in ['price slab', 'priceslab', 'price_slab']

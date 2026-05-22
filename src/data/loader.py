@@ -421,6 +421,16 @@ class DataLoader:
             'pct scheme 4': 'Pct_Scheme_4',
             'pctscheme-4': 'Pct_Scheme_4',
             'pctscheme4': 'Pct_Scheme_4',
+            'pct scheme -5': 'Pct_Scheme_5',
+            'pct scheme-5': 'Pct_Scheme_5',
+            'pct scheme 5': 'Pct_Scheme_5',
+            'pctscheme-5': 'Pct_Scheme_5',
+            'pctscheme5': 'Pct_Scheme_5',
+            'pct scheme -6': 'Pct_Scheme_6',
+            'pct scheme-6': 'Pct_Scheme_6',
+            'pct scheme 6': 'Pct_Scheme_6',
+            'pctscheme-6': 'Pct_Scheme_6',
+            'pctscheme6': 'Pct_Scheme_6',
             'flat schme': 'Flat_Scheme',
             'flat scheme': 'Flat_Scheme',
             'flat_scheme': 'Flat_Scheme',
@@ -478,7 +488,7 @@ class DataLoader:
 
         # Convert percentage columns from whole numbers to decimals (e.g., 2.5 -> 0.025)
         # Store original percentage values for display
-        percentage_columns = ['Pct_Scheme_1', 'Pct_Scheme_2', 'Pct_Scheme_3', 'Pct_Scheme_4']
+        percentage_columns = ['Pct_Scheme_1', 'Pct_Scheme_2', 'Pct_Scheme_3', 'Pct_Scheme_4', 'Pct_Scheme_5', 'Pct_Scheme_6']
         for col in percentage_columns:
             if col in df.columns:
                 logger.info(f"Scheme column {col} sample value: {df[col].iloc[0] if len(df) > 0 else 'empty'}")
