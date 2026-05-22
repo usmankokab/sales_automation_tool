@@ -371,9 +371,9 @@ class CalculationEngine:
         logger.info(f"Using price variable: {self.price_variable_column} (column: {selected_column})")
         
         if brand_upper == "REDMI":
-            # REDMI: FINAL PRICE = {price_variable} - DROP
-            df['Tax_Base_Final_Price'] = price_variable - df['Drop_Amount']
-            logger.info(f"Applied REDMI formula: {self.price_variable_column} - Drop")
+            # REDMI: FINAL PRICE = {price_variable} (Drop is NOT deducted)
+            df['Tax_Base_Final_Price'] = price_variable
+            logger.info(f"Applied REDMI formula: {self.price_variable_column} (Drop NOT deducted)")
             
         elif brand_upper == "SAMSUNG":
             # SAMSUNG: FINAL PRICE = {price_variable} - FLAT PAYOUT (Drop is NOT deducted)
