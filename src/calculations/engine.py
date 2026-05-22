@@ -14,7 +14,9 @@ class CalculationEngine:
     def __init__(self, drop_dump: pd.DataFrame, price_list: pd.DataFrame,
                  scheme_file: pd.DataFrame, sales_data: pd.DataFrame, brand: str = None,
                  purchase_price_threshold: Optional[float] = None,
-                 price_variable_column: str = None):
+                 price_variable_column: str = None,
+                 lower_threshold: Optional[float] = None,
+                 upper_threshold: Optional[float] = None):
         """
         Initialize with all required data sources from workbook.
 
@@ -24,8 +26,10 @@ class CalculationEngine:
             scheme_file: DataFrame with scheme definitions
             sales_data: DataFrame with sales transactions
             brand: Selected brand name for brand-specific calculations
-            purchase_price_threshold: Optional threshold for PCT Scheme-1 A/B selection
+            purchase_price_threshold: Optional threshold for PCT Scheme-1 A/B selection (non-REDMI brands)
             price_variable_column: Price field to use in Final Price calculation (required)
+            lower_threshold: Lower threshold for REDMI 3-tier logic
+            upper_threshold: Upper threshold for REDMI 3-tier logic
         """
         self.drop_dump = drop_dump.copy()
         self.price_list = price_list.copy()
@@ -34,6 +38,8 @@ class CalculationEngine:
         self.brand = brand
         self.purchase_price_threshold = purchase_price_threshold
         self.price_variable_column = price_variable_column
+        self.lower_threshold = lower_threshold
+        self.upper_threshold = upper_threshold
         self.processed_data = None
         self.errors = []
 
@@ -170,14 +176,17 @@ class CalculationEngine:
         if self.drop_dump.empty:
             logger.warning("Drop dump is empty - no drop amounts will be applied")
 
-        # Check price list
-        if self.price_list.empty:
-            raise ValueError("Price list is empty")
-
-        required_price_cols = ['Master_Model', 'Purchase_Price']
-        missing_cols = [col for col in required_price_cols if col not in self.price_list.columns]
-        if missing_cols:
-            raise ValueError(f"Missing required columns in price list: {missing_cols}")
+        # # Check price list (OPTIONAL - COMMENTED OUT - NOT USED)
+        # # Client provides all prices in Sales sheet, so Price List is not needed
+        # if not self.price_list.empty:
+        #     if 'Master_Model' not in self.price_list.columns:
+        #         logger.warning("Price list missing 'Master_Model' column - price list will be ignored")
+        #     if 'Purchase_Price' not in self.price_list.columns:
+        #         logger.warning("Price list missing 'Purchase_Price' column - price list will be ignored")
+        # else:
+        #     logger.warning("Price list is empty - will be ignored")
+        
+        logger.info("Price list validation skipped - all prices come from Sales sheet")
 
         # Check scheme file
         if self.scheme_file.empty:
@@ -213,26 +222,54 @@ class CalculationEngine:
         return df
     
     def _step_3_4_price_match(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Step 3-4: Calculate MOP and determine HIKE/DROP/SAME.
+        """Step 3-4: Determine HIKE/DROP/SAME remarks.
         
-        Step 3: Calculate MOP = Purchase Price * 100/96
-        Step 4: Calculate HIKE = Purchase Price - Bill Less in Invoice
+        Step 3: MOP is provided by client in Sales sheet (no calculation needed)
+        Step 4: Calculate HIKE = Current Month Invoice Price - Purchase Price
                 Determine remark based on HIKE and DROP values
+        
+        NOTE: All prices including MOP come from Sales sheet - no calculations for MOP
         """
-        logger.info("Step 3-4: Calculating MOP and HIKE...")
+        logger.info("Step 3-4: Calculating HIKE and remarks...")
 
+        # Check for "Not Active" in Sell_Out_Date before converting to datetime
+        def check_sell_date_active(date_val):
+            """Check if sell date is active or 'Not Active' string."""
+            if pd.isna(date_val):
+                return False  # Treat NaT/empty as Not Active
+            
+            # Check if it's a string containing "not active" (case-insensitive)
+            if isinstance(date_val, str):
+                if 'not active' in date_val.lower():
+                    return False
+            
+            return True  # Valid date
+        
+        # Apply the check before datetime conversion
+        df['Sell_Date_Active'] = df['Sell_Out_Date'].apply(check_sell_date_active)
+        
         # Ensure Sell_Out_Date is datetime, convert invalid dates to NaT
         df['Sell_Out_Date'] = pd.to_datetime(df['Sell_Out_Date'], errors='coerce')
         
-        # Log how many invalid dates were found
-        invalid_dates = df['Sell_Out_Date'].isna().sum()
-        if invalid_dates > 0:
-            logger.warning(f"Found {invalid_dates} invalid sell out dates")
-            self.errors.append(f"Warning: {invalid_dates} records have invalid sell out dates")
+        # Update Sell_Date_Active for dates that failed to parse
+        df.loc[df['Sell_Out_Date'].isna(), 'Sell_Date_Active'] = False
+        
+        # Log how many invalid/not active dates were found
+        not_active_count = (~df['Sell_Date_Active']).sum()
+        if not_active_count > 0:
+            logger.warning(f"Found {not_active_count} 'Not Active' or invalid sell out dates")
+            self.errors.append(f"Warning: {not_active_count} records have 'Not Active' or invalid sell out dates")
 
-        # Step 3: Calculate MOP AT THE TIME OF PURCHASE = Purchase Price * 100/96
-        df['Matched_Price'] = df['Purchase_Price'] * (100 / 96)
-        df['Sell_Date_Active'] = True  # Always active for this calculation method
+        # Step 3: MOP is provided by client in Sales sheet - no calculation needed
+        # Client provides "MOP at the Time of Purchase" directly in input
+        # We just use it as-is from the Sales sheet
+        if 'Purchase_Price' in df.columns:
+            # Use Purchase_Price as Matched_Price for compatibility
+            # (MOP should already be in the Sales sheet as a separate column)
+            df['Matched_Price'] = df.get('Purchase_Price', 0)
+        else:
+            df['Matched_Price'] = 0
+            logger.warning("Purchase_Price not found, setting Matched_Price to 0")
 
         # Step 4: Calculate HIKE = Current Month Invoice Price - Purchase Price
         def get_hike_remark(row):
@@ -251,12 +288,14 @@ class CalculationEngine:
             hike_value = round(hike_value, 2)
             drop = round(drop, 2)
             
+            # If HIKE is negative, set to 0 (no hike)
+            if hike_value < 0:
+                hike_value = 0
+            
             # Remark logic: 
-            # If drop == 0 AND (hike <= 0), show "same"
-            # This covers: no drop + no hike, no drop + negative hike
-            if drop == 0 and hike_value <= 0:
+            # If drop == 0 AND hike == 0, show "same"
+            if drop == 0 and hike_value == 0:
                 remark = 'same'
-                hike_value = 0  # Set HIKE to 0 for display
             elif drop > 0 and hike_value > 0:
                 remark = 'drop and hike both'
             elif drop > 0:
@@ -265,7 +304,6 @@ class CalculationEngine:
                 remark = 'hike'
             else:
                 remark = 'same'
-                hike_value = 0  # Set HIKE to 0 for display
             
             return pd.Series({'Calc_HIKE': hike_value, 'Calc_Remark': remark})
 
@@ -273,7 +311,7 @@ class CalculationEngine:
         df['Calc_HIKE'] = hike_remark['Calc_HIKE']
         df['Calc_Remark'] = hike_remark['Calc_Remark']
 
-        logger.info(f"MOP and HIKE calculated for {len(df)} records")
+        logger.info(f"HIKE and remarks calculated for {len(df)} records")
         return df
     
     def _step_5_6_tax_base(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -381,6 +419,14 @@ class CalculationEngine:
         self.scheme_file['Scheme_Start_Date'] = pd.to_datetime(self.scheme_file['Scheme_Start_Date'], errors='coerce')
         self.scheme_file['Scheme_End_Date'] = pd.to_datetime(self.scheme_file['Scheme_End_Date'], errors='coerce')
         
+        # Check if Flat Payout date columns exist
+        has_flat_dates = 'Flat_Payout_Start_Date' in self.scheme_file.columns and 'Flat_Payout_End_Date' in self.scheme_file.columns
+        
+        if has_flat_dates:
+            self.scheme_file['Flat_Payout_Start_Date'] = pd.to_datetime(self.scheme_file['Flat_Payout_Start_Date'], errors='coerce')
+            self.scheme_file['Flat_Payout_End_Date'] = pd.to_datetime(self.scheme_file['Flat_Payout_End_Date'], errors='coerce')
+            logger.info("Flat Payout date range columns detected and parsed")
+        
         # Remove rows with invalid dates
         valid_scheme_rows = self.scheme_file[
             self.scheme_file['Scheme_Start_Date'].notna() & 
@@ -414,8 +460,26 @@ class CalculationEngine:
             master_model = str(row.get('Master_Model', '') or '')
             sell_date = row['Sell_Out_Date']
             pre_gst_price = row.get('Tax_Base_Pre_GST_Price', 0) or 0
+            final_price = row.get('Tax_Base_Final_Price', 0) or 0
             sell_date_active = row.get('Sell_Date_Active', True)
             purchase_price = row.get('Purchase_Price', 0) or 0
+            
+            # Determine brand
+            brand_upper = self.brand.upper() if self.brand else ""
+            
+            # For REDMI and SAMSUNG, use Current MOP/SRP for threshold comparison
+            # For other brands, use Purchase Price
+            if brand_upper in ["REDMI", "SAMSUNG"]:
+                threshold_comparison_price = row.get('Current_MOP_SRP', 0) or 0
+            else:
+                threshold_comparison_price = purchase_price
+            
+            # For REDMI, use FINAL PRICE FOR CALCULATION for scheme amount calculation
+            # For other brands, use PRE GST OF FINAL PRICE CALCULATION
+            if brand_upper == "REDMI":
+                scheme_calculation_base = final_price
+            else:
+                scheme_calculation_base = pre_gst_price
 
             zero = pd.Series({
                 'pct_scheme_1': 0, 'pct_scheme_2': 0, 'pct_scheme_3': 0, 'pct_scheme_4': 0,
@@ -423,11 +487,11 @@ class CalculationEngine:
                 'Flat_Incentive': 0, 'Total_Pct_Incentive': 0, 'Total_Flat_Incentive': 0
             })
 
-            # Check if sell_date is valid (not string, not NaT)
-            if not master_model or pd.isna(sell_date) or isinstance(sell_date, str):
+            # Check if master model exists
+            if not master_model:
                 return zero
-
-            # NOTE: If sell date was not active (date-validation-1 fallback), no payout
+            
+            # If Sell_Out_Date is "Not Active" or invalid, skip ALL schemes
             if not sell_date_active:
                 return zero
 
@@ -444,40 +508,61 @@ class CalculationEngine:
             if not best_match:
                 return zero
 
-            mask = (
+            # Normal case: Use Scheme_Start_Date and Scheme_End_Date for filtering
+            if pd.isna(sell_date) or isinstance(sell_date, str):
+                return zero
+            
+            pct_mask = (
                 (self.scheme_file['Master_Model'].astype(str) == best_match[0]) &
                 (self.scheme_file['Scheme_Start_Date'] <= sell_date) &
                 (self.scheme_file['Scheme_End_Date'] >= sell_date)
             )
-            applicable_schemes = self.scheme_file[mask]
+            applicable_pct_schemes = self.scheme_file[pct_mask]
 
             # Initialize aggregated values
             pct_scheme_1 = pct_scheme_2 = pct_scheme_3 = pct_scheme_4 = 0
             pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = 0
             flat_scheme = 0
 
-            # Loop through ALL matching scheme entries and aggregate
-            if not applicable_schemes.empty:
-                for _, scheme in applicable_schemes.iterrows():
-                    # Check CONDITION-1 for PCT Scheme-1 A/B logic
+            # Loop through ALL matching PCT scheme entries and aggregate
+            if not applicable_pct_schemes.empty:
+                for _, scheme in applicable_pct_schemes.iterrows():
+                    # ===== PCT SCHEME-1 LOGIC =====
                     condition_1 = str(scheme.get('Condition_1', '')).strip().lower()
                     has_price_slab = condition_1 in ['price slab', 'priceslab', 'price_slab']
                     
-                    # Check if A/B columns exist
+                    # Check if A/B/C columns exist
                     has_a_col = 'Pct_Scheme_1_A' in self.scheme_file.columns
                     has_b_col = 'Pct_Scheme_1_B' in self.scheme_file.columns
+                    has_c_col = 'Pct_Scheme_1_C' in self.scheme_file.columns
                     
-                    # Get PCT Scheme-1 value based on conditions
-                    if has_price_slab and has_a_col and has_b_col:
-                        # CONDITION-1 = "PRICE SLAB" - use threshold logic
+                    # Get PCT Scheme-1 value based on brand and conditions
+                    if brand_upper == "REDMI" and has_price_slab and has_a_col and has_b_col and has_c_col:
+                        # REDMI 3-tier logic with CONDITION-1 = "PRICE SLAB"
+                        # Use Current MOP/SRP for threshold comparison
+                        if self.lower_threshold is not None and self.upper_threshold is not None:
+                            if threshold_comparison_price < self.lower_threshold:
+                                pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                            elif threshold_comparison_price <= self.upper_threshold:
+                                pct_scheme_1_raw = scheme.get('Pct_Scheme_1_B', 0) or 0
+                            else:  # threshold_comparison_price > upper_threshold
+                                pct_scheme_1_raw = scheme.get('Pct_Scheme_1_C', 0) or 0
+                        else:
+                            # Thresholds not provided - default to A
+                            pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                    
+                    elif has_price_slab and has_a_col and has_b_col:
+                        # Non-REDMI 2-tier logic with CONDITION-1 = "PRICE SLAB"
+                        # SAMSUNG uses Current MOP/SRP, others use Purchase Price
                         if self.purchase_price_threshold is not None:
-                            if purchase_price <= self.purchase_price_threshold:
+                            if threshold_comparison_price <= self.purchase_price_threshold:
                                 pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
                             else:
                                 pct_scheme_1_raw = scheme.get('Pct_Scheme_1_B', 0) or 0
                         else:
-                            # Threshold not provided but A/B exist - this should be caught in validation
+                            # Threshold not provided - default to A
                             pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
+                    
                     elif has_a_col:
                         # CONDITION-1 != "PRICE SLAB" or missing - always use A if exists
                         pct_scheme_1_raw = scheme.get('Pct_Scheme_1_A', 0) or 0
@@ -485,14 +570,26 @@ class CalculationEngine:
                         # No A/B columns - use original PCT Scheme-1
                         pct_scheme_1_raw = scheme.get('Pct_Scheme_1', 0) or 0
                     
-                    # Get other scheme values
-                    pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
+                    # ===== PCT SCHEME-2 LOGIC =====
+                    # Check CONDITION-2 for REDMI
+                    condition_2 = str(scheme.get('Condition_2', '')).strip().upper()
+                    has_condition_2_above = 'ABOVE' in condition_2
+                    has_2a_col = 'Pct_Scheme_2_A' in self.scheme_file.columns
+                    
+                    if brand_upper == "REDMI" and has_condition_2_above and has_2a_col:
+                        # REDMI CONDITION-2 logic
+                        # Use Current MOP/SRP for threshold comparison
+                        if self.lower_threshold is not None and threshold_comparison_price > self.lower_threshold:
+                            pct_scheme_2_raw = scheme.get('Pct_Scheme_2_A', 0) or 0
+                        else:
+                            pct_scheme_2_raw = 0
+                    else:
+                        # Non-REDMI or no CONDITION-2: Use regular Pct_Scheme_2
+                        pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
+                    
+                    # Get other scheme values (unchanged)
                     pct_scheme_3_raw = scheme.get('Pct_Scheme_3', 0) or 0
                     pct_scheme_4_raw = scheme.get('Pct_Scheme_4', 0) or 0
-                    
-                    # Get flat scheme value
-                    _flat = scheme.get('Flat_Scheme', None)
-                    flat_scheme_entry = float(_flat) if pd.notna(_flat) else 0
                     
                     # Convert to percentage format and calculation format
                     # PCT Scheme-1
@@ -526,15 +623,66 @@ class CalculationEngine:
                     else:
                         pct_scheme_4 += pct_scheme_4_raw
                         pct_scheme_4_calc += pct_scheme_4_raw / 100 if pct_scheme_4_raw > 0 else 0
-                    
-                    # Aggregate flat scheme
-                    flat_scheme += flat_scheme_entry
 
-            # Step 8: pct amount = pct_scheme_calc * pre_gst_price
-            pct_incentive_1 = pct_scheme_1_calc * pre_gst_price
-            pct_incentive_2 = pct_scheme_2_calc * pre_gst_price
-            pct_incentive_3 = pct_scheme_3_calc * pre_gst_price
-            pct_incentive_4 = pct_scheme_4_calc * pre_gst_price
+            # For Flat Payout: Apply when sell_date is valid
+            if not (pd.isna(sell_date) or isinstance(sell_date, str)):
+                if has_flat_dates:
+                    # Check if this specific scheme row has Flat Payout dates populated
+                    # We need to check each scheme row individually
+                    for _, scheme in self.scheme_file[self.scheme_file['Master_Model'].astype(str) == best_match[0]].iterrows():
+                        flat_start = scheme.get('Flat_Payout_Start_Date')
+                        flat_end = scheme.get('Flat_Payout_End_Date')
+                        _flat = scheme.get('Flat_Scheme', None)
+                        
+                        # DEBUG: Log the comparison
+                        if pd.notna(_flat) and _flat != 0:
+                            logger.info(f"DEBUG - Model: {master_model}, Sell Date: {sell_date}, Flat Start: {flat_start}, Flat End: {flat_end}, Flat Value: {_flat}")
+                        
+                        # Skip if no flat scheme value
+                        if pd.isna(_flat) or _flat == 0:
+                            continue
+                        
+                        # If Flat dates are populated, use them ONLY (no fallback)
+                        if pd.notna(flat_start) and pd.notna(flat_end):
+                            if flat_start <= sell_date <= flat_end:
+                                logger.info(f"DEBUG - MATCH: Applying Flat Payout {_flat} (within range)")
+                                flat_scheme += float(_flat)
+                            else:
+                                logger.info(f"DEBUG - NO MATCH: Sell date {sell_date} is outside Flat range {flat_start} to {flat_end}")
+                        # If Flat dates are empty, fall back to Scheme dates
+                        elif pd.isna(flat_start) and pd.isna(flat_end):
+                            scheme_start = scheme.get('Scheme_Start_Date')
+                            scheme_end = scheme.get('Scheme_End_Date')
+                            if pd.notna(scheme_start) and pd.notna(scheme_end):
+                                if scheme_start <= sell_date <= scheme_end:
+                                    logger.info(f"DEBUG - FALLBACK: Applying Flat Payout {_flat} (using Scheme dates)")
+                                    flat_scheme += float(_flat)
+                        else:
+                            # One date is populated, one is not - this is an error condition
+                            logger.warning(f"DEBUG - ERROR: Flat dates partially populated for {master_model}")
+                else:
+                    # No Flat Payout date columns, use Scheme dates
+                    flat_mask = (
+                        (self.scheme_file['Master_Model'].astype(str) == best_match[0]) &
+                        (self.scheme_file['Scheme_Start_Date'] <= sell_date) &
+                        (self.scheme_file['Scheme_End_Date'] >= sell_date)
+                    )
+                    applicable_flat_schemes = self.scheme_file[flat_mask]
+                    
+                    # Aggregate Flat Scheme values
+                    if not applicable_flat_schemes.empty:
+                        for _, scheme in applicable_flat_schemes.iterrows():
+                            _flat = scheme.get('Flat_Scheme', None)
+                            flat_scheme_entry = float(_flat) if pd.notna(_flat) else 0
+                            flat_scheme += flat_scheme_entry
+
+            # Step 8: pct amount = pct_scheme_calc * scheme_calculation_base
+            # For REDMI: scheme_calculation_base = FINAL PRICE FOR CALCULATION
+            # For others: scheme_calculation_base = PRE GST OF FINAL PRICE CALCULATION
+            pct_incentive_1 = pct_scheme_1_calc * scheme_calculation_base
+            pct_incentive_2 = pct_scheme_2_calc * scheme_calculation_base
+            pct_incentive_3 = pct_scheme_3_calc * scheme_calculation_base
+            pct_incentive_4 = pct_scheme_4_calc * scheme_calculation_base
             total_pct = pct_incentive_1 + pct_incentive_2 + pct_incentive_3 + pct_incentive_4
 
             return pd.Series({
@@ -626,13 +774,14 @@ class CalculationEngine:
         return df
 
     def _step_11_final_validation(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Step 11: Final validation and cleanup with exact column ordering."""
-        logger.info("Step 11: Performing final validation and column ordering...")
+        """Step 11: Final validation and cleanup."""
+        logger.info("Step 11: Performing final validation...")
 
-        # Validate date consistency - ensure dates are datetime
+        # Validate date consistency
         if 'Purchase_Date' in df.columns:
-            df['Purchase_Date'] = pd.to_datetime(df['Purchase_Date'], errors='coerce')
-            df['Sell_Out_Date'] = pd.to_datetime(df['Sell_Out_Date'], errors='coerce')
+            # Parse dates with explicit DD-MM-YYYY format (dayfirst=True)
+            df['Purchase_Date'] = pd.to_datetime(df['Purchase_Date'], errors='coerce', dayfirst=True)
+            df['Sell_Out_Date'] = pd.to_datetime(df['Sell_Out_Date'], errors='coerce', dayfirst=True)
             
             invalid_dates = df[
                 (df['Purchase_Date'].notna()) &
@@ -651,78 +800,87 @@ class CalculationEngine:
         if missing_models > 0:
             self.errors.append(f"Warning: {missing_models} records have missing Master Model")
 
-        # Use exact column names matching the actual workbook sales sheet (excluding hidden columns)
+        # Define final column order with display names
         final_columns = [
-            'IMEI', 'Sell Out Date', 'Activation Date', 'Master Model', 'SERIES',
-            'Distributor', 'Purchase Date', 'Purchase Price',
-            'MOP at the Time of Purchase', 'Current MOP/SRP', 'Current Month Invoice Price',
-            'Current Month Pre-GST of Invoice Price', 'Drop', 'Flat Payout',
-            'HIKE', 'Remark (Drop, Hike, Same (Drop and Hike Both)',
-            'FINAL PRICE FOR CALCULATION', 'PRE GST OF FINAL PRICE CALCULATION',
-            'PCT Scheme-1', 'Amount PCT Scheme-1',
-            'PCT Scheme-2', 'Amount PCT Scheme-2',
-            'PCT Scheme-3', 'Amount PCT Scheme-3',
-            'PCT Scheme-4', 'Amount PCT Scheme-4',
-            'Total Scheme Received', 'TOTAL PCT SCHEME + FLAT PAYOUT'
+            'IMEI',
+            'Sell Out Date',
+            'Master Model',
+            'SERIES',
+            'Distributor',
+            'Purchase Date',
+            'Purchase Price',
+            'Current Month Invoice Price',
+            'Current Month Pre-GST of Invoice Price',
+            'Current MOP/SRP',
+            'Activation Date',
+            'MOP at the Time of Purchase',
+            'Drop',
+            'Flat Payout',
+            'HIKE',
+            'Remark (Drop, Hike, Same (Drop and Hike Both)',
+            'FINAL PRICE FOR CALCULATION',
+            'PRE GST OF FINAL PRICE CALCULATION',
+            'PCT Scheme-1',
+            'Amount PCT Scheme-1',
+            'PCT Scheme-2',
+            'Amount PCT Scheme-2',
+            'PCT Scheme-3',
+            'Amount PCT Scheme-3',
+            'PCT Scheme-4',
+            'Amount PCT Scheme-4',
+            'Total Scheme Received',
+            'TOTAL PCT SCHEME + FLAT PAYOUT'
         ]
 
-        final_df = df.copy()
-
-        # --- Columns from calculations (rounded to 2 decimal places) ---
-        final_df['MOP at the Time of Purchase'] = final_df.get('Matched_Price', np.nan).round(2)
-        final_df['HIKE'] = final_df.get('Calc_HIKE', np.nan).round(2)
-        final_df['Remark (Drop, Hike, Same (Drop and Hike Both)'] = final_df.get('Calc_Remark', '')
-        final_df['FINAL PRICE FOR CALCULATION'] = final_df.get('Tax_Base_Final_Price', np.nan).round(2)
-        final_df['PRE GST OF FINAL PRICE CALCULATION'] = final_df.get('Tax_Base_Pre_GST_Price', np.nan).round(2)
-        final_df['PCT Scheme-1'] = final_df.get('pct_scheme_1', 0)
-        final_df['Amount PCT Scheme-1'] = final_df.get('Pct_Incentive_1', 0).round(2)
-        final_df['PCT Scheme-2'] = final_df.get('pct_scheme_2', 0)
-        final_df['Amount PCT Scheme-2'] = final_df.get('Pct_Incentive_2', 0).round(2)
-        final_df['PCT Scheme-3'] = final_df.get('pct_scheme_3', 0)
-        final_df['Amount PCT Scheme-3'] = final_df.get('Pct_Incentive_3', 0).round(2)
-        final_df['PCT Scheme-4'] = final_df.get('pct_scheme_4', 0)
-        final_df['Amount PCT Scheme-4'] = final_df.get('Pct_Incentive_4', 0).round(2)
+        # Create final dataframe with renamed columns
+        final_df = pd.DataFrame()
         
-        # Format percentage columns to show with % symbol (rounded to 2 decimals)
+        # Map internal columns to display columns
+        final_df['IMEI'] = df['IMEI'].astype(str).str.replace(',', '', regex=False)
+        final_df['Sell Out Date'] = df.get('Sell_Out_Date', '')
+        final_df['Master Model'] = df.get('Master_Model', '')
+        
+        # SERIES: use original value from input only - no auto-extraction
+        # Client is responsible for providing SERIES data
+        final_df['SERIES'] = df.get('SERIES', '')
+        
+        final_df['Distributor'] = df.get('Distributor', '')
+        final_df['Purchase Date'] = df.get('Purchase_Date', '')
+        final_df['Purchase Price'] = df.get('Purchase_Price', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['Current Month Invoice Price'] = df.get('Current_Month_Invoice_Price', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['Current Month Pre-GST of Invoice Price'] = df.get('Current_Month_Pre_GST_Invoice_Price', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['Current MOP/SRP'] = df.get('Current_MOP_SRP', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['Activation Date'] = df.get('Activation_Date', np.nan)
+        final_df['MOP at the Time of Purchase'] = df.get('Matched_Price', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['Drop'] = df.get('Drop_Amount', 0).fillna(0).round(0).astype('Int64')
+        final_df['Flat Payout'] = df.get('Flat_Incentive', 0).fillna(0).round(0).astype('Int64')
+        final_df['HIKE'] = df.get('Calc_HIKE', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['Remark (Drop, Hike, Same (Drop and Hike Both)'] = df.get('Calc_Remark', '')
+        final_df['FINAL PRICE FOR CALCULATION'] = df.get('Tax_Base_Final_Price', np.nan).fillna(0).round(0).astype('Int64')
+        final_df['PRE GST OF FINAL PRICE CALCULATION'] = df.get('Tax_Base_Pre_GST_Price', np.nan).fillna(0).round(0).astype('Int64')
+        
+        # PCT Schemes with percentage formatting
+        final_df['PCT Scheme-1'] = df.get('pct_scheme_1', 0)
+        final_df['Amount PCT Scheme-1'] = df.get('Pct_Incentive_1', 0).fillna(0).round(0).astype('Int64')
+        final_df['PCT Scheme-2'] = df.get('pct_scheme_2', 0)
+        final_df['Amount PCT Scheme-2'] = df.get('Pct_Incentive_2', 0).fillna(0).round(0).astype('Int64')
+        final_df['PCT Scheme-3'] = df.get('pct_scheme_3', 0)
+        final_df['Amount PCT Scheme-3'] = df.get('Pct_Incentive_3', 0).fillna(0).round(0).astype('Int64')
+        final_df['PCT Scheme-4'] = df.get('pct_scheme_4', 0)
+        final_df['Amount PCT Scheme-4'] = df.get('Pct_Incentive_4', 0).fillna(0).round(0).astype('Int64')
+        
+        # Format percentage columns to show with % symbol
         for col in ['PCT Scheme-1', 'PCT Scheme-2', 'PCT Scheme-3', 'PCT Scheme-4']:
             if col in final_df.columns:
                 final_df[col] = final_df[col].apply(lambda x: f"{round(x, 2)}%" if pd.notna(x) and x > 0 else ("0%" if pd.notna(x) else ""))
         
-        final_df['Flat Payout'] = final_df.get('Flat_Incentive', 0).round(2)
-        final_df['Total Scheme Received'] = final_df.get('Total_Incentive_Received', 0).round(2)
-        final_df['TOTAL PCT SCHEME + FLAT PAYOUT'] = final_df.get('Calculated_NLC', np.nan).round(2)
-        final_df['Drop'] = final_df.get('Drop_Amount', 0).round(2)
+        final_df['Total Scheme Received'] = df.get('Total_Incentive_Received', 0).fillna(0).round(0).astype('Int64')
+        final_df['TOTAL PCT SCHEME + FLAT PAYOUT'] = df.get('Calculated_NLC', np.nan).fillna(0).round(0).astype('Int64')
 
-        # --- Columns sourced from sales sheet (rename standardized back to display names) ---
-        final_df['Sell Out Date'] = final_df.get('Sell_Out_Date', '')
-        final_df['Master Model'] = final_df.get('Master_Model', '')
-        final_df['Distributor'] = final_df.get('Distributor', '')
-        final_df['Purchase Date'] = final_df.get('Purchase_Date', '')
-        final_df['Purchase Price'] = final_df.get('Purchase_Price', np.nan)
-        final_df['Current Month Invoice Price'] = final_df.get('Current_Month_Invoice_Price', np.nan)
-        final_df['Current Month Pre-GST of Invoice Price'] = final_df.get('Current_Month_Pre_GST_Invoice_Price', np.nan)
-        
-        # Current MOP/SRP - use standardized column name
-        final_df['Current MOP/SRP'] = final_df.get('Current_MOP_SRP', np.nan)
-        
-        # Activation Date - use standardized column name
-        final_df['Activation Date'] = final_df.get('Activation_Date', np.nan)
-
-        # SERIES: use original value from input if available, otherwise extract from master model
-        if 'SERIES' in final_df.columns and final_df['SERIES'].notna().any():
-            # Keep original SERIES values
-            pass
-        else:
-            # Extract from master model as fallback
-            final_df['SERIES'] = final_df['Master Model'].astype(str).str.split().str[0]
-        
-        # Format IMEI as string without commas
-        final_df['IMEI'] = final_df['IMEI'].astype(str).str.replace(',', '', regex=False)
-
-        # Keep only final columns in correct order
+        # Keep only columns that have data
         final_df = final_df[final_columns]
 
-        logger.info(f"Final column ordering completed. Shape: {final_df.shape}")
+        logger.info(f"Final validation completed. Shape: {final_df.shape}")
         return final_df
 
     def _get_default_value_for_column(self, column_name: str, df: pd.DataFrame):
@@ -826,7 +984,7 @@ class CalculationEngine:
                 pivot_rows.append({
                     'Distributor Name': distributor,
                     'Scheme Name': scheme_name,
-                    'Final AMT': round(total_amount, 2)
+                    'Final AMT': int(round(total_amount, 0))
                 })
 
         # Create DataFrame

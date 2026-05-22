@@ -32,10 +32,13 @@ class DataLoader:
             for sheet_name in xl.sheet_names:
                 try:
                     # Load each sheet with appropriate header handling
-                    if sheet_name.lower() == 'drop dump':
+                    sheet_lower = sheet_name.lower().strip()
+                    
+                    # Check for Drop Dump sheet variations
+                    if any(variant in sheet_lower for variant in ['drop dump', 'dropdump', 'drop_dump', 'drop-dump']) or sheet_lower == 'drop':
                         # Drop dump has headers on row 0
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=0)
-                    elif sheet_name.lower() == 'scheme':
+                    elif 'scheme' in sheet_lower:
                         # Scheme sheet: try to detect header row automatically
                         temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
                         
@@ -48,7 +51,7 @@ class DataLoader:
                         
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
                         logger.info(f"Scheme sheet loaded with header at row {header_row}")
-                    elif 'sales' in sheet_name.lower():
+                    elif 'sales' in sheet_lower:
                         # Sales sheet: detect header row automatically
                         temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
                         
@@ -62,7 +65,7 @@ class DataLoader:
                         
                         df = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
                         logger.info(f"Sales sheet loaded with header at row {header_row}, shape: {df.shape}")
-                    elif 'price' in sheet_name.lower():
+                    elif 'price' in sheet_lower:
                         # Price list: detect header row automatically
                         temp_df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=10)
                         
@@ -117,17 +120,23 @@ class DataLoader:
             logger.error(f"Sales sheet not found. Available sheets: {list(workbook_data.keys())}")
             raise ValueError(f"Sales sheet not found in workbook. Available sheets: {list(workbook_data.keys())}")
 
-        # Extract price list - try multiple possible sheet names
-        price_list = None
-        for sheet_name in workbook_data.keys():
-            if 'price' in sheet_name.lower():
-                price_list = workbook_data[sheet_name]
-                logger.info(f"Found price list in sheet: {sheet_name}")
-                break
-
-        if price_list is None or price_list.empty:
-            logger.error(f"Price List sheet not found. Available sheets: {list(workbook_data.keys())}")
-            raise ValueError(f"Price List sheet not found in workbook. Available sheets: {list(workbook_data.keys())}")
+        # # Extract price list - COMMENTED OUT - NOT USED
+        # # Client provides all prices in Sales sheet
+        # price_list = None
+        # for sheet_name in workbook_data.keys():
+        #     if 'price' in sheet_name.lower():
+        #         price_list = workbook_data[sheet_name]
+        #         logger.info(f"Found price list in sheet: {sheet_name} (will be ignored)")
+        #         break
+        # 
+        # if price_list is None or price_list.empty:
+        #     logger.warning(f"Price List sheet not found or empty. Available sheets: {list(workbook_data.keys())}")
+        #     logger.warning("Processing will continue without Price List validation")
+        #     price_list = pd.DataFrame()  # Create empty dataframe
+        
+        # Create empty price list dataframe - not used in processing
+        price_list = pd.DataFrame()
+        logger.info("Price List sheet skipped - all prices come from Sales sheet")
 
         # Extract scheme file - try multiple possible sheet names
         scheme_file = None
@@ -144,7 +153,9 @@ class DataLoader:
         # Extract drop dump - try multiple possible sheet names
         drop_dump = None
         for sheet_name in workbook_data.keys():
-            if 'drop' in sheet_name.lower():
+            sheet_lower = sheet_name.lower().strip()
+            # Check for various drop dump sheet name variations
+            if any(variant in sheet_lower for variant in ['drop dump', 'dropdump', 'drop_dump', 'drop-dump']) or sheet_lower == 'drop':
                 drop_dump = workbook_data[sheet_name]
                 logger.info(f"Found drop dump in sheet: {sheet_name}")
                 break
@@ -157,7 +168,7 @@ class DataLoader:
 
         # Standardize column names
         sales_data = DataLoader._standardize_sales_columns(sales_data)
-        price_list = DataLoader._standardize_price_columns(price_list)
+        # price_list = DataLoader._standardize_price_columns(price_list)  # COMMENTED OUT - NOT USED
         scheme_file = DataLoader._standardize_scheme_columns(scheme_file)
         drop_dump = DataLoader._standardize_drop_columns(drop_dump)
 
@@ -189,6 +200,7 @@ class DataLoader:
             'purchase price': 'Purchase_Price',
             'purchaseprice': 'Purchase_Price',
             'purchase_price': 'Purchase_Price',
+            'pur cost mop': 'Purchase_Price',  # Variation for Purchase Price / MOP
             'bill less in invoice': 'Current_Month_Invoice_Price',
             'bill less in invoice ': 'Current_Month_Invoice_Price',
             'current month invoice price': 'Current_Month_Invoice_Price',
@@ -199,6 +211,11 @@ class DataLoader:
             'drop': 'Original_Drop',  # Rename existing drop column to avoid conflicts
             'current mop/srp': 'Current_MOP_SRP',  # Standardized name
             'activation date': 'Activation_Date',  # Standardized name
+            'final price for multiplication': 'Final_Price_For_Multiplication',
+            'final price for multipliaction': 'Final_Price_For_Multiplication',  # Handle typo
+            'final_price_for_multiplication': 'Final_Price_For_Multiplication',
+            'finalprice for multiplication': 'Final_Price_For_Multiplication',
+            'final price multiplication': 'Final_Price_For_Multiplication',
         }
 
         df = df.rename(columns=column_mapping)
@@ -246,6 +263,16 @@ class DataLoader:
             logger.error(f"Required columns still missing after fuzzy matching: {missing_cols}")
             logger.error(f"Available columns: {list(df.columns)}")
             raise ValueError(f"Missing required columns in sales data: {missing_cols}. Available columns: {list(df.columns)[:10]}")
+        
+        # Round all price/amount columns in Sales sheet to whole numbers (except percentages)
+        price_amount_columns = [
+            'Purchase_Price', 'Current_Month_Invoice_Price', 'Current_Month_Pre_GST_Invoice_Price',
+            'Current_MOP_SRP', 'Original_Drop', 'Purchase_Price'  # MOP at the Time of Purchase maps to Purchase_Price
+        ]
+        for col in price_amount_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').round(0).astype('Int64')
+                logger.info(f"Rounded {col} in Sales sheet to whole numbers")
 
         return df
 
@@ -254,6 +281,8 @@ class DataLoader:
         """Standardize column names for price list."""
         # Convert all column names to strings first, then lowercase
         df.columns = df.columns.astype(str).str.lower().str.strip()
+        
+        logger.info(f"Price list original columns: {list(df.columns)}")
         
         column_mapping = {
             'master model': 'Master_Model',
@@ -267,16 +296,40 @@ class DataLoader:
             'valid to': 'Valid_To',
             'valid_to': 'Valid_To',
             'validto': 'Valid_To',
-            'net purchase 4%': 'Purchase_Price',
-            'purchase_price': 'Purchase_Price',
             'purchase price': 'Purchase_Price',
+            'purchase_price': 'Purchase_Price',
             'purchaseprice': 'Purchase_Price',
+            'purchase invoice': 'Purchase_Price',
+            'purchase_invoice': 'Purchase_Price',
+            'purchaseinvoice': 'Purchase_Price',
             'pre gst price': 'Pre_GST_Price',
             'pre_gst_price': 'Pre_GST_Price',
             'pregstprice': 'Pre_GST_Price',
         }
 
         df = df.rename(columns=column_mapping)
+        
+        logger.info(f"Price list columns after mapping: {list(df.columns)}")
+        
+        # If Purchase_Price is still missing, try broader fuzzy matching
+        if 'Purchase_Price' not in df.columns:
+            for col in df.columns:
+                col_lower = str(col).lower()
+                # Look for any column containing 'price' or 'invoice' (but not 'pre gst')
+                if ('price' in col_lower or 'invoice' in col_lower) and 'pre' not in col_lower and 'gst' not in col_lower:
+                    df = df.rename(columns={col: 'Purchase_Price'})
+                    logger.info(f"Mapped '{col}' to 'Purchase_Price' via fuzzy matching")
+                    break
+        
+        # If Master_Model is still missing, try fuzzy matching
+        if 'Master_Model' not in df.columns:
+            for col in df.columns:
+                col_lower = str(col).lower()
+                if 'model' in col_lower or 'master' in col_lower:
+                    df = df.rename(columns={col: 'Master_Model'})
+                    logger.info(f"Mapped '{col}' to 'Master_Model' via fuzzy matching")
+                    break
+        
         return df
 
     @staticmethod
@@ -305,21 +358,69 @@ class DataLoader:
             'end': 'Scheme_End_Date',
             'to date': 'Scheme_End_Date',
             'pct scheme -1': 'Pct_Scheme_1',
+            'pct scheme-1': 'Pct_Scheme_1',
+            'pct scheme 1': 'Pct_Scheme_1',
+            'pctscheme-1': 'Pct_Scheme_1',
+            'pctscheme1': 'Pct_Scheme_1',
             'pct scheme -1 (a)': 'Pct_Scheme_1_A',
             'pct scheme -1(a)': 'Pct_Scheme_1_A',
             'pct scheme -1 a': 'Pct_Scheme_1_A',
             'pct scheme-1 (a)': 'Pct_Scheme_1_A',
             'pct scheme-1(a)': 'Pct_Scheme_1_A',
             'pct scheme-1 a': 'Pct_Scheme_1_A',
+            'pct scheme 1 (a)': 'Pct_Scheme_1_A',
+            'pct scheme 1(a)': 'Pct_Scheme_1_A',
+            'pct scheme 1 a': 'Pct_Scheme_1_A',
+            'pctscheme-1(a)': 'Pct_Scheme_1_A',
+            'pctscheme1(a)': 'Pct_Scheme_1_A',
             'pct scheme -1 (b)': 'Pct_Scheme_1_B',
             'pct scheme -1(b)': 'Pct_Scheme_1_B',
             'pct scheme -1 b': 'Pct_Scheme_1_B',
             'pct scheme-1 (b)': 'Pct_Scheme_1_B',
             'pct scheme-1(b)': 'Pct_Scheme_1_B',
             'pct scheme-1 b': 'Pct_Scheme_1_B',
+            'pct scheme 1 (b)': 'Pct_Scheme_1_B',
+            'pct scheme 1(b)': 'Pct_Scheme_1_B',
+            'pct scheme 1 b': 'Pct_Scheme_1_B',
+            'pctscheme-1(b)': 'Pct_Scheme_1_B',
+            'pctscheme1(b)': 'Pct_Scheme_1_B',
+            'pct scheme -1 (c)': 'Pct_Scheme_1_C',
+            'pct scheme -1(c)': 'Pct_Scheme_1_C',
+            'pct scheme -1 c': 'Pct_Scheme_1_C',
+            'pct scheme-1 (c)': 'Pct_Scheme_1_C',
+            'pct scheme-1(c)': 'Pct_Scheme_1_C',
+            'pct scheme-1 c': 'Pct_Scheme_1_C',
+            'pct scheme 1 (c)': 'Pct_Scheme_1_C',
+            'pct scheme 1(c)': 'Pct_Scheme_1_C',
+            'pct scheme 1 c': 'Pct_Scheme_1_C',
+            'pctscheme-1(c)': 'Pct_Scheme_1_C',
+            'pctscheme1(c)': 'Pct_Scheme_1_C',
             'pct scheme -2': 'Pct_Scheme_2',
+            'pct scheme-2': 'Pct_Scheme_2',
+            'pct scheme 2': 'Pct_Scheme_2',
+            'pctscheme-2': 'Pct_Scheme_2',
+            'pctscheme2': 'Pct_Scheme_2',
+            'pct scheme -2 (a)': 'Pct_Scheme_2_A',
+            'pct scheme -2(a)': 'Pct_Scheme_2_A',
+            'pct scheme -2 a': 'Pct_Scheme_2_A',
+            'pct scheme-2 (a)': 'Pct_Scheme_2_A',
+            'pct scheme-2(a)': 'Pct_Scheme_2_A',
+            'pct scheme-2 a': 'Pct_Scheme_2_A',
+            'pct scheme 2 (a)': 'Pct_Scheme_2_A',
+            'pct scheme 2(a)': 'Pct_Scheme_2_A',
+            'pct scheme 2 a': 'Pct_Scheme_2_A',
+            'pctscheme-2(a)': 'Pct_Scheme_2_A',
+            'pctscheme2(a)': 'Pct_Scheme_2_A',
             'pct scheme -3': 'Pct_Scheme_3',
+            'pct scheme-3': 'Pct_Scheme_3',
+            'pct scheme 3': 'Pct_Scheme_3',
+            'pctscheme-3': 'Pct_Scheme_3',
+            'pctscheme3': 'Pct_Scheme_3',
             'pct scheme -4': 'Pct_Scheme_4',
+            'pct scheme-4': 'Pct_Scheme_4',
+            'pct scheme 4': 'Pct_Scheme_4',
+            'pctscheme-4': 'Pct_Scheme_4',
+            'pctscheme4': 'Pct_Scheme_4',
             'flat schme': 'Flat_Scheme',
             'flat scheme': 'Flat_Scheme',
             'flat_scheme': 'Flat_Scheme',
@@ -331,6 +432,22 @@ class DataLoader:
             'condition_1': 'Condition_1',
             'condition 1': 'Condition_1',
             'condition1': 'Condition_1',
+            'condition': 'Condition_1',
+            'condition-2': 'Condition_2',
+            'condition -2': 'Condition_2',
+            'condition_2': 'Condition_2',
+            'condition 2': 'Condition_2',
+            'condition2': 'Condition_2',
+            'flat start date': 'Flat_Payout_Start_Date',
+            'flat_start_date': 'Flat_Payout_Start_Date',
+            'flatstartdate': 'Flat_Payout_Start_Date',
+            'flat start': 'Flat_Payout_Start_Date',
+            'flat end date': 'Flat_Payout_End_Date',
+            'flat_end_date': 'Flat_Payout_End_Date',
+            'flatenddate': 'Flat_Payout_End_Date',
+            'flat end': 'Flat_Payout_End_Date',
+            'flate end date': 'Flat_Payout_End_Date',  # Handle typo variation
+            'flate_end_date': 'Flat_Payout_End_Date',  # Handle typo variation
         }
 
         df = df.rename(columns=column_mapping)
@@ -380,6 +497,9 @@ class DataLoader:
             'imei': 'IMEI',
             'drop amount': 'Drop_Amount',
             'drop_amount': 'Drop_Amount',
+            'dropamount': 'Drop_Amount',
+            'drop': 'Drop_Amount',
+            'amount': 'Drop_Amount',
         }
 
         df = df.rename(columns=column_mapping)
@@ -388,11 +508,27 @@ class DataLoader:
 
         # Validate required columns exist
         if 'IMEI' not in df.columns:
-            raise ValueError("Drop dump sheet must contain 'IMEI' or 'imei' column")
+            # Try to find IMEI column by partial matching
+            for col in df.columns:
+                if 'imei' in col.lower():
+                    df = df.rename(columns={col: 'IMEI'})
+                    logger.info(f"Mapped '{col}' to 'IMEI'")
+                    break
+            
+            if 'IMEI' not in df.columns:
+                raise ValueError("Drop dump sheet must contain 'IMEI' or 'imei' column")
 
         if 'Drop_Amount' not in df.columns:
-            logger.warning("Drop dump sheet missing 'Drop_Amount' column, assuming 0 for all records")
-            df['Drop_Amount'] = 0
+            # Try to find Drop_Amount column by partial matching
+            for col in df.columns:
+                if 'drop' in col.lower() or 'amount' in col.lower():
+                    df = df.rename(columns={col: 'Drop_Amount'})
+                    logger.info(f"Mapped '{col}' to 'Drop_Amount'")
+                    break
+            
+            if 'Drop_Amount' not in df.columns:
+                logger.warning("Drop dump sheet missing 'Drop_Amount' column, assuming 0 for all records")
+                df['Drop_Amount'] = 0
 
         return df
 
@@ -559,7 +695,8 @@ class DataLoader:
         headers = df.columns.tolist()
         totals_row = []
         for col in headers:
-            if df[col].dtype in ['int64', 'float64']:
+            # Check if column is numeric (including Int64, Float64, int64, float64)
+            if pd.api.types.is_numeric_dtype(df[col]):
                 total_val = df[col].sum()
                 totals_row.append(total_val)
             else:
@@ -648,7 +785,7 @@ class DataLoader:
         elif any(keyword in column_name.lower() for keyword in ['price', 'amount', 'incentive', 'margin', 'cost', 'total']):
             try:
                 if isinstance(value, (int, float)):
-                    cell.number_format = '₹#,##0.00'
+                    cell.number_format = '#,##0.00'
             except:
                 pass
 

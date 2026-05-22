@@ -211,14 +211,47 @@ class SIATDashboard:
         )
         
         # Purchase Price Threshold for PCT Scheme-1 A/B selection
-        purchase_price_threshold = st.sidebar.number_input(
-            "Purchase Price Threshold",
-            min_value=0.0,
-            value=0.0,
-            step=100.0,
-            help="Optional: Enter threshold for PCT Scheme-1 A/B selection. Leave as 0 if not applicable.",
-            key="purchase_price_threshold"
-        )
+        # Show different inputs based on brand selection
+        if st.session_state.selected_brand == "Redmi":
+            # REDMI: Show two threshold inputs
+            st.sidebar.markdown("**Threshold Range (for REDMI 3-tier logic)**")
+            col1, col2 = st.sidebar.columns(2)
+            with col1:
+                lower_threshold = st.number_input(
+                    "Lower Threshold",
+                    min_value=0.0,
+                    value=0.0,
+                    step=100.0,
+                    help="Lower threshold for REDMI PCT Scheme-1 (A/B/C) selection",
+                    key="lower_threshold"
+                )
+            with col2:
+                upper_threshold = st.number_input(
+                    "Upper Threshold",
+                    min_value=0.0,
+                    value=0.0,
+                    step=100.0,
+                    help="Upper threshold for REDMI PCT Scheme-1 (A/B/C) selection",
+                    key="upper_threshold"
+                )
+            # Store in session state (don't set to None, leave undefined)
+            if 'purchase_price_threshold' in st.session_state:
+                del st.session_state['purchase_price_threshold']
+        else:
+            # Other brands: Show single threshold input
+            purchase_price_threshold = st.sidebar.number_input(
+                "Purchase Price Threshold",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
+                help="Optional: Enter threshold for PCT Scheme-1 A/B selection. Leave as 0 if not applicable.",
+                key="purchase_price_threshold"
+            )
+            # Store in session state (don't set to None, leave undefined)
+            if 'lower_threshold' in st.session_state:
+                del st.session_state['lower_threshold']
+            if 'upper_threshold' in st.session_state:
+                del st.session_state['upper_threshold']
         
         st.sidebar.markdown("---")
         st.sidebar.markdown('<div class="sidebar-header">📊 Workbook Upload</div>', unsafe_allow_html=True)
@@ -367,21 +400,25 @@ class SIATDashboard:
         # Check if A/B columns exist
         has_a_col = 'Pct_Scheme_1_A' in self.scheme_file.columns
         has_b_col = 'Pct_Scheme_1_B' in self.scheme_file.columns
+        has_c_col = 'Pct_Scheme_1_C' in self.scheme_file.columns
         has_condition_col = 'Condition_1' in self.scheme_file.columns
         
         if not (has_a_col or has_b_col):
             return None
         
-        # Check if any A/B values exist
+        # Check if any A/B/C values exist
         has_a_values = False
         has_b_values = False
+        has_c_values = False
         
         if has_a_col:
             has_a_values = self.scheme_file['Pct_Scheme_1_A'].notna().any()
         if has_b_col:
             has_b_values = self.scheme_file['Pct_Scheme_1_B'].notna().any()
+        if has_c_col:
+            has_c_values = self.scheme_file['Pct_Scheme_1_C'].notna().any()
         
-        if not (has_a_values or has_b_values):
+        if not (has_a_values or has_b_values or has_c_values):
             return None
         
         # Check if CONDITION-1 has "PRICE SLAB" in any row
@@ -390,16 +427,31 @@ class SIATDashboard:
             condition_values = self.scheme_file['Condition_1'].astype(str).str.lower().str.strip()
             has_price_slab = condition_values.isin(['price slab', 'priceslab', 'price_slab']).any()
         
-        # Get threshold from widget
-        threshold = st.session_state.purchase_price_threshold if st.session_state.purchase_price_threshold > 0 else None
+        # Get threshold from widget based on brand
+        if st.session_state.selected_brand == "Redmi":
+            # REDMI: Check lower and upper thresholds
+            lower_thresh = st.session_state.get('lower_threshold', 0)
+            upper_thresh = st.session_state.get('upper_threshold', 0)
+            threshold_provided = (lower_thresh > 0 or upper_thresh > 0)
+        else:
+            # Other brands: Check purchase_price_threshold
+            threshold = st.session_state.get('purchase_price_threshold', 0)
+            threshold_provided = (threshold > 0)
         
         # If PRICE SLAB condition exists and threshold is not provided
-        if has_price_slab and threshold is None:
-            return (
-                "⚠️ Purchase Price threshold is required because scheme sheet contains "
-                "PCT Scheme-1 (A)/(B) with PRICE SLAB condition. Please enter threshold value "
-                "in the Conditions section or correct scheme headings."
-            )
+        if has_price_slab and not threshold_provided:
+            if st.session_state.selected_brand == "Redmi":
+                return (
+                    "⚠️ Lower and Upper thresholds are required for REDMI because scheme sheet contains "
+                    "PCT Scheme-1 (A)/(B)/(C) with PRICE SLAB condition. Please enter threshold values "
+                    "in the Conditions section."
+                )
+            else:
+                return (
+                    "⚠️ Purchase Price threshold is required because scheme sheet contains "
+                    "PCT Scheme-1 (A)/(B) with PRICE SLAB condition. Please enter threshold value "
+                    "in the Conditions section or correct scheme headings."
+                )
         
         return None
 
@@ -442,12 +494,34 @@ class SIATDashboard:
                        f"scheme={self.scheme_file.shape if self.scheme_file is not None else None}, " +
                        f"drop={self.drop_dump.shape if self.drop_dump is not None else None}")
 
+            # Prepare threshold parameters based on brand
+            purchase_threshold = None
+            lower_thresh = None
+            upper_thresh = None
+            
+            if st.session_state.selected_brand == "Redmi":
+                # REDMI: Use lower and upper thresholds
+                lower_thresh = st.session_state.get('lower_threshold', 0)
+                upper_thresh = st.session_state.get('upper_threshold', 0)
+                if lower_thresh > 0 or upper_thresh > 0:
+                    lower_thresh = lower_thresh if lower_thresh > 0 else None
+                    upper_thresh = upper_thresh if upper_thresh > 0 else None
+                else:
+                    lower_thresh = None
+                    upper_thresh = None
+            else:
+                # Other brands: Use single purchase_price_threshold
+                purchase_threshold = st.session_state.get('purchase_price_threshold', 0)
+                purchase_threshold = purchase_threshold if purchase_threshold > 0 else None
+            
             self.calculation_engine = CalculationEngine(
                 self.drop_dump, self.price_list,
                 self.scheme_file, self.sales_data,
                 brand=st.session_state.selected_brand,
-                purchase_price_threshold=st.session_state.purchase_price_threshold if st.session_state.purchase_price_threshold > 0 else None,
-                price_variable_column=st.session_state.price_variable_selector
+                purchase_price_threshold=purchase_threshold,
+                price_variable_column=st.session_state.price_variable_selector,
+                lower_threshold=lower_thresh,
+                upper_threshold=upper_thresh
             )
             logger.info("Calculation engine initialized successfully")
 
@@ -1024,8 +1098,10 @@ class SIATDashboard:
                 numeric_cols = display_df.select_dtypes(include=[np.number]).columns
                 for col in numeric_cols:
                     if col in ['MOP at the Time of Purchase', 'Drop', 'Total Scheme Received', 'TOTAL PCT SCHEME + FLAT PAYOUT', 'FINAL PRICE FOR CALCULATION',
-                              'Current Month Invoice Price', 'Current Month Pre-GST of Invoice Price']:
-                        display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "N/A")
+                              'Current Month Invoice Price', 'Current Month Pre-GST of Invoice Price', 'Purchase Price', 'Current MOP/SRP',
+                              'Amount PCT Scheme-1', 'Amount PCT Scheme-2', 'Amount PCT Scheme-3', 'Amount PCT Scheme-4', 'Flat Payout', 'HIKE']:
+                        # Display as whole numbers without decimals
+                        display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}" if pd.notna(x) and x == x else "N/A")
 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
