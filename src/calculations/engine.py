@@ -376,11 +376,11 @@ class CalculationEngine:
             logger.info(f"Applied REDMI formula: {self.price_variable_column} - Drop")
             
         elif brand_upper == "SAMSUNG":
-            # SAMSUNG: FINAL PRICE = {price_variable} - DROP - FLAT PAYOUT
+            # SAMSUNG: FINAL PRICE = {price_variable} - FLAT PAYOUT (Drop is NOT deducted)
             # Note: Flat payout will be calculated later, so we'll adjust this in step 10
-            df['Tax_Base_Final_Price'] = price_variable - df['Drop_Amount']
+            df['Tax_Base_Final_Price'] = price_variable  # No Drop deduction for Samsung
             df['Samsung_Adjustment_Needed'] = True  # Flag for later adjustment
-            logger.info(f"Applied SAMSUNG formula: {self.price_variable_column} - Drop (Flat Payout will be deducted later)")
+            logger.info(f"Applied SAMSUNG formula: {self.price_variable_column} (Flat Payout will be deducted later, Drop NOT deducted)")
             
         elif brand_upper in ["REALME", "OPPO"]:
             # REALME/OPPO: FINAL PRICE = {price_variable} - DROP
