@@ -489,8 +489,8 @@ class CalculationEngine:
             else:
                 threshold_comparison_price = purchase_price
             
-            # For REDMI, use FINAL PRICE FOR CALCULATION for scheme amount calculation
-            # For other brands, use PRE GST OF FINAL PRICE CALCULATION
+            # For REDMI ONLY, use FINAL PRICE FOR CALCULATION for scheme amount calculation
+            # For ALL other brands (including SAMSUNG), use PRE GST OF FINAL PRICE CALCULATION
             if brand_upper == "REDMI":
                 scheme_calculation_base = final_price
             else:
@@ -727,8 +727,8 @@ class CalculationEngine:
                             flat_scheme += flat_scheme_entry
 
             # Step 8: pct amount = pct_scheme_calc * scheme_calculation_base
-            # For REDMI: scheme_calculation_base = FINAL PRICE FOR CALCULATION
-            # For others: scheme_calculation_base = PRE GST OF FINAL PRICE CALCULATION
+            # For REDMI ONLY: scheme_calculation_base = FINAL PRICE FOR CALCULATION (with GST)
+            # For ALL others (including SAMSUNG): scheme_calculation_base = PRE GST OF FINAL PRICE CALCULATION
             pct_incentive_1 = pct_scheme_1_calc * scheme_calculation_base
             pct_incentive_2 = pct_scheme_2_calc * scheme_calculation_base
             pct_incentive_3 = pct_scheme_3_calc * scheme_calculation_base
