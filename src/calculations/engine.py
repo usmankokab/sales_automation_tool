@@ -323,6 +323,71 @@ class CalculationEngine:
         logger.info(f"HIKE and remarks calculated for {len(df)} records")
         return df
     
+    def _get_flat_payout_for_samsung(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate Flat Payout early for SAMSUNG to use in Final Price calculation."""
+        logger.info("Pre-calculating Flat Payout for SAMSUNG...")
+        
+        # Prepare scheme file dates
+        has_flat_dates = 'Flat_Payout_Start_Date' in self.scheme_file.columns and 'Flat_Payout_End_Date' in self.scheme_file.columns
+        
+        def get_flat_for_row(row):
+            master_model = str(row.get('Master_Model', '') or '')
+            sell_date = row['Sell_Out_Date']
+            sell_date_active = row.get('Sell_Date_Active', True)
+            
+            if not master_model or not sell_date_active or pd.isna(sell_date):
+                return 0
+            
+            # Use cached fuzzy match
+            if master_model not in self._scheme_model_cache:
+                best_match = self._fuzzy_match_model(
+                    str(master_model),
+                    self.scheme_file['Master_Model'].dropna().astype(str).tolist()
+                )
+                self._scheme_model_cache[master_model] = best_match
+            
+            best_match = self._scheme_model_cache[master_model]
+            if not best_match:
+                return 0
+            
+            flat_scheme = 0
+            
+            if has_flat_dates:
+                for _, scheme in self.scheme_file[self.scheme_file['Master_Model'].astype(str) == best_match[0]].iterrows():
+                    flat_start = scheme.get('Flat_Payout_Start_Date')
+                    flat_end = scheme.get('Flat_Payout_End_Date')
+                    _flat = scheme.get('Flat_Scheme', None)
+                    
+                    if pd.isna(_flat) or _flat == 0:
+                        continue
+                    
+                    if pd.notna(flat_start) and pd.notna(flat_end):
+                        if flat_start <= sell_date <= flat_end:
+                            flat_scheme += float(_flat)
+                    elif pd.isna(flat_start) and pd.isna(flat_end):
+                        scheme_start = scheme.get('Scheme_Start_Date')
+                        scheme_end = scheme.get('Scheme_End_Date')
+                        if pd.notna(scheme_start) and pd.notna(scheme_end):
+                            if scheme_start <= sell_date <= scheme_end:
+                                flat_scheme += float(_flat)
+            else:
+                flat_mask = (
+                    (self.scheme_file['Master_Model'].astype(str) == best_match[0]) &
+                    (self.scheme_file['Scheme_Start_Date'] <= sell_date) &
+                    (self.scheme_file['Scheme_End_Date'] >= sell_date)
+                )
+                applicable_flat_schemes = self.scheme_file[flat_mask]
+                
+                if not applicable_flat_schemes.empty:
+                    for _, scheme in applicable_flat_schemes.iterrows():
+                        _flat = scheme.get('Flat_Scheme', None)
+                        flat_scheme_entry = float(_flat) if pd.notna(_flat) else 0
+                        flat_scheme += flat_scheme_entry
+            
+            return flat_scheme
+        
+        return df.apply(get_flat_for_row, axis=1)
+    
     def _step_5_6_tax_base(self, df: pd.DataFrame) -> pd.DataFrame:
         """Step 5-6: Calculate Final Price and Pre-GST Price with brand-specific logic."""
         logger.info("Step 5-6: Calculating tax base...")
@@ -386,10 +451,11 @@ class CalculationEngine:
             
         elif brand_upper == "SAMSUNG":
             # SAMSUNG: FINAL PRICE = {price_variable} - FLAT PAYOUT (Drop is NOT deducted)
-            # Note: Flat payout will be calculated later, so we'll adjust this in step 10
-            df['Tax_Base_Final_Price'] = price_variable  # No Drop deduction for Samsung
-            df['Samsung_Adjustment_Needed'] = True  # Flag for later adjustment
-            logger.info(f"Applied SAMSUNG formula: {self.price_variable_column} (Flat Payout will be deducted later, Drop NOT deducted)")
+            # Calculate Flat Payout FIRST, then deduct from Final Price
+            df['Flat_Payout_Early'] = self._get_flat_payout_for_samsung(df)
+            df['Tax_Base_Final_Price'] = price_variable - df['Flat_Payout_Early']
+            logger.info(f"Applied SAMSUNG formula: {self.price_variable_column} - Flat Payout (Drop NOT deducted)")
+            logger.info(f"Total Flat Payout deducted: {df['Flat_Payout_Early'].sum():,.0f}")
             
         elif brand_upper in ["REALME", "OPPO"]:
             # REALME/OPPO: FINAL PRICE = {price_variable} - DROP
@@ -545,7 +611,12 @@ class CalculationEngine:
             # Initialize aggregated values
             pct_scheme_1 = pct_scheme_2 = pct_scheme_3 = pct_scheme_4 = pct_scheme_5 = pct_scheme_6 = 0
             pct_scheme_1_calc = pct_scheme_2_calc = pct_scheme_3_calc = pct_scheme_4_calc = pct_scheme_5_calc = pct_scheme_6_calc = 0
-            flat_scheme = 0
+            
+            # For SAMSUNG, use pre-calculated Flat Payout from Step 5-6
+            if brand_upper == "SAMSUNG" and 'Flat_Payout_Early' in row.index:
+                flat_scheme = row.get('Flat_Payout_Early', 0) or 0
+            else:
+                flat_scheme = 0
 
             # Loop through ALL matching PCT scheme entries and aggregate
             if not applicable_pct_schemes.empty:
@@ -674,57 +745,47 @@ class CalculationEngine:
                             pct_scheme_6 += pct_scheme_6_raw
                             pct_scheme_6_calc += pct_scheme_6_raw / 100 if pct_scheme_6_raw > 0 else 0
 
-            # For Flat Payout: Apply when sell_date is valid
-            if not (pd.isna(sell_date) or isinstance(sell_date, str)):
-                if has_flat_dates:
-                    # Check if this specific scheme row has Flat Payout dates populated
-                    # We need to check each scheme row individually
-                    for _, scheme in self.scheme_file[self.scheme_file['Master_Model'].astype(str) == best_match[0]].iterrows():
-                        flat_start = scheme.get('Flat_Payout_Start_Date')
-                        flat_end = scheme.get('Flat_Payout_End_Date')
-                        _flat = scheme.get('Flat_Scheme', None)
-                        
-                        # DEBUG: Log the comparison
-                        if pd.notna(_flat) and _flat != 0:
-                            logger.info(f"DEBUG - Model: {master_model}, Sell Date: {sell_date}, Flat Start: {flat_start}, Flat End: {flat_end}, Flat Value: {_flat}")
-                        
-                        # Skip if no flat scheme value
-                        if pd.isna(_flat) or _flat == 0:
-                            continue
-                        
-                        # If Flat dates are populated, use them ONLY (no fallback)
-                        if pd.notna(flat_start) and pd.notna(flat_end):
-                            if flat_start <= sell_date <= flat_end:
-                                logger.info(f"DEBUG - MATCH: Applying Flat Payout {_flat} (within range)")
-                                flat_scheme += float(_flat)
-                            else:
-                                logger.info(f"DEBUG - NO MATCH: Sell date {sell_date} is outside Flat range {flat_start} to {flat_end}")
-                        # If Flat dates are empty, fall back to Scheme dates
-                        elif pd.isna(flat_start) and pd.isna(flat_end):
-                            scheme_start = scheme.get('Scheme_Start_Date')
-                            scheme_end = scheme.get('Scheme_End_Date')
-                            if pd.notna(scheme_start) and pd.notna(scheme_end):
-                                if scheme_start <= sell_date <= scheme_end:
-                                    logger.info(f"DEBUG - FALLBACK: Applying Flat Payout {_flat} (using Scheme dates)")
-                                    flat_scheme += float(_flat)
-                        else:
-                            # One date is populated, one is not - this is an error condition
-                            logger.warning(f"DEBUG - ERROR: Flat dates partially populated for {master_model}")
-                else:
-                    # No Flat Payout date columns, use Scheme dates
-                    flat_mask = (
-                        (self.scheme_file['Master_Model'].astype(str) == best_match[0]) &
-                        (self.scheme_file['Scheme_Start_Date'] <= sell_date) &
-                        (self.scheme_file['Scheme_End_Date'] >= sell_date)
-                    )
-                    applicable_flat_schemes = self.scheme_file[flat_mask]
-                    
-                    # Aggregate Flat Scheme values
-                    if not applicable_flat_schemes.empty:
-                        for _, scheme in applicable_flat_schemes.iterrows():
+            # For non-SAMSUNG brands OR if Flat Payout not pre-calculated, calculate Flat Payout here
+            if brand_upper != "SAMSUNG" or 'Flat_Payout_Early' not in row.index:
+                if not (pd.isna(sell_date) or isinstance(sell_date, str)):
+                    if has_flat_dates:
+                        # Check if this specific scheme row has Flat Payout dates populated
+                        # We need to check each scheme row individually
+                        for _, scheme in self.scheme_file[self.scheme_file['Master_Model'].astype(str) == best_match[0]].iterrows():
+                            flat_start = scheme.get('Flat_Payout_Start_Date')
+                            flat_end = scheme.get('Flat_Payout_End_Date')
                             _flat = scheme.get('Flat_Scheme', None)
-                            flat_scheme_entry = float(_flat) if pd.notna(_flat) else 0
-                            flat_scheme += flat_scheme_entry
+                            
+                            # Skip if no flat scheme value
+                            if pd.isna(_flat) or _flat == 0:
+                                continue
+                            
+                            # If Flat dates are populated, use them ONLY (no fallback)
+                            if pd.notna(flat_start) and pd.notna(flat_end):
+                                if flat_start <= sell_date <= flat_end:
+                                    flat_scheme += float(_flat)
+                            # If Flat dates are empty, fall back to Scheme dates
+                            elif pd.isna(flat_start) and pd.isna(flat_end):
+                                scheme_start = scheme.get('Scheme_Start_Date')
+                                scheme_end = scheme.get('Scheme_End_Date')
+                                if pd.notna(scheme_start) and pd.notna(scheme_end):
+                                    if scheme_start <= sell_date <= scheme_end:
+                                        flat_scheme += float(_flat)
+                    else:
+                        # No Flat Payout date columns, use Scheme dates
+                        flat_mask = (
+                            (self.scheme_file['Master_Model'].astype(str) == best_match[0]) &
+                            (self.scheme_file['Scheme_Start_Date'] <= sell_date) &
+                            (self.scheme_file['Scheme_End_Date'] >= sell_date)
+                        )
+                        applicable_flat_schemes = self.scheme_file[flat_mask]
+                        
+                        # Aggregate Flat Scheme values
+                        if not applicable_flat_schemes.empty:
+                            for _, scheme in applicable_flat_schemes.iterrows():
+                                _flat = scheme.get('Flat_Scheme', None)
+                                flat_scheme_entry = float(_flat) if pd.notna(_flat) else 0
+                                flat_scheme += flat_scheme_entry
 
             # Step 8: pct amount = pct_scheme_calc * scheme_calculation_base
             # For REDMI ONLY: scheme_calculation_base = FINAL PRICE FOR CALCULATION (with GST)
@@ -788,7 +849,7 @@ class CalculationEngine:
         return df
 
     def _step_10_nlc(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Step 10: Calculate Net Landing Cost (NLC) with Samsung adjustment."""
+        """Step 10: Calculate Net Landing Cost (NLC)."""
         logger.info("Step 10: Calculating Net Landing Cost...")
 
         # Ensure required columns exist
@@ -803,22 +864,8 @@ class CalculationEngine:
         if 'Total_Incentive_Received' not in df.columns:
             logger.warning("Total_Incentive_Received column missing, assuming 0")
             df['Total_Incentive_Received'] = 0
-            
-        if 'Flat_Incentive' not in df.columns:
-            logger.warning("Flat_Incentive column missing, assuming 0")
-            df['Flat_Incentive'] = 0
 
-        # Samsung-specific adjustment: Subtract Flat Payout from Final Price
-        brand_upper = self.brand.upper() if self.brand else ""
-        if brand_upper == "SAMSUNG" and 'Samsung_Adjustment_Needed' in df.columns:
-            df['Tax_Base_Final_Price'] = df['Tax_Base_Final_Price'] - df['Flat_Incentive']
-            df['Final_Price'] = df['Tax_Base_Final_Price']
-            # Recalculate Pre-GST Price after adjustment
-            df['Tax_Base_Pre_GST_Price'] = df['Tax_Base_Final_Price'] / 1.18
-            df['Pre_GST_Price'] = df['Tax_Base_Pre_GST_Price']
-            logger.info("Applied Samsung adjustment: Subtracted Flat Payout from Final Price")
-
-        # Store final price for calculations
+        # Store final price for calculations (already calculated correctly in Step 5-6)
         df['Calculated_Final_Price'] = df['Tax_Base_Final_Price']
 
         # NLC = Final Price - Total Incentive Received
