@@ -1309,6 +1309,94 @@ class SIATDashboard:
             st.info(f"Good: {completeness_score:.1f}% data quality")
         else:
             st.warning(f"Needs attention: {completeness_score:.1f}% data quality")
+        
+        # Add Input Configuration Summary Section
+        st.markdown("---")
+        self._display_input_configuration_summary()
+    
+    def _display_input_configuration_summary(self):
+        """Display summary of all input values selected from Conditions section."""
+        st.header("📋 Input Configuration Summary")
+        st.markdown("*Review the configuration used for this calculation*")
+        
+        # Create a clean summary card
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 🏷️ Brand & Price Variable")
+            
+            # Brand
+            brand = st.session_state.get('selected_brand', 'Not Selected')
+            st.info(f"**Selected Brand:** {brand}")
+            
+            # Price Variable
+            price_var = st.session_state.get('price_variable_selector', 'Not Selected')
+            st.info(f"**Price Variable for Final Price Calculation:** {price_var}")
+        
+        with col2:
+            st.markdown("### 🎯 Threshold Configuration")
+            
+            # Show thresholds based on brand
+            if brand == "Redmi":
+                lower_thresh = st.session_state.get('lower_threshold', 0)
+                upper_thresh = st.session_state.get('upper_threshold', 0)
+                above_thresh = st.session_state.get('above_threshold', 0)
+                
+                st.info(f"**Lower Threshold (Condition-1):** {lower_thresh:,.0f}")
+                st.info(f"**Upper Threshold (Condition-1):** {upper_thresh:,.0f}")
+                st.info(f"**Above Threshold (Condition-2):** {above_thresh:,.0f}")
+            else:
+                purchase_thresh = st.session_state.get('purchase_price_threshold', 0)
+                st.info(f"**Purchase Price Threshold:** {purchase_thresh:,.0f}")
+        
+        # Summary table
+        st.markdown("### 📊 Configuration Details")
+        
+        if brand == "Redmi":
+            config_data = {
+                'Parameter': [
+                    'Brand',
+                    'Price Variable',
+                    'Lower Threshold',
+                    'Upper Threshold',
+                    'Above Threshold'
+                ],
+                'Value': [
+                    brand,
+                    price_var,
+                    f"{st.session_state.get('lower_threshold', 0):,.0f}",
+                    f"{st.session_state.get('upper_threshold', 0):,.0f}",
+                    f"{st.session_state.get('above_threshold', 0):,.0f}"
+                ],
+                'Description': [
+                    'Selected brand for calculation',
+                    'Price field used in Final Price formula',
+                    'Lower bound for PCT Scheme-1 (A/B/C) selection',
+                    'Upper bound for PCT Scheme-1 (A/B/C) selection',
+                    'Threshold for PCT Scheme-2 ABOVE condition'
+                ]
+            }
+        else:
+            config_data = {
+                'Parameter': [
+                    'Brand',
+                    'Price Variable',
+                    'Purchase Price Threshold'
+                ],
+                'Value': [
+                    brand,
+                    price_var,
+                    f"{st.session_state.get('purchase_price_threshold', 0):,.0f}"
+                ],
+                'Description': [
+                    'Selected brand for calculation',
+                    'Price field used in Final Price formula',
+                    'Threshold for PCT Scheme-1 (A/B) selection'
+                ]
+            }
+        
+        config_df = pd.DataFrame(config_data)
+        st.dataframe(config_df, use_container_width=True, hide_index=True)
 
 def main():
     """Main entry point for the dashboard."""
