@@ -16,7 +16,8 @@ class CalculationEngine:
                  purchase_price_threshold: Optional[float] = None,
                  price_variable_column: str = None,
                  lower_threshold: Optional[float] = None,
-                 upper_threshold: Optional[float] = None):
+                 upper_threshold: Optional[float] = None,
+                 above_threshold: Optional[float] = None):
         """
         Initialize with all required data sources from workbook.
 
@@ -28,8 +29,9 @@ class CalculationEngine:
             brand: Selected brand name for brand-specific calculations
             purchase_price_threshold: Optional threshold for PCT Scheme-1 A/B selection (non-REDMI brands)
             price_variable_column: Price field to use in Final Price calculation (required)
-            lower_threshold: Lower threshold for REDMI 3-tier logic
-            upper_threshold: Upper threshold for REDMI 3-tier logic
+            lower_threshold: Lower threshold for REDMI 3-tier logic (Condition-1)
+            upper_threshold: Upper threshold for REDMI 3-tier logic (Condition-1)
+            above_threshold: Above threshold for REDMI Condition-2 logic
         """
         self.drop_dump = drop_dump.copy()
         self.price_list = price_list.copy()
@@ -40,6 +42,7 @@ class CalculationEngine:
         self.price_variable_column = price_variable_column
         self.lower_threshold = lower_threshold
         self.upper_threshold = upper_threshold
+        self.above_threshold = above_threshold
         self.processed_data = None
         self.errors = []
 
@@ -677,15 +680,23 @@ class CalculationEngine:
                     has_condition_2_above = 'ABOVE' in condition_2
                     has_2a_col = 'Pct_Scheme_2_A' in self.scheme_file.columns
                     
-                    if brand_upper == "REDMI" and has_condition_2_above and has_2a_col:
-                        # REDMI CONDITION-2 logic
-                        # Use Current MOP/SRP for threshold comparison
-                        if self.lower_threshold is not None and threshold_comparison_price > self.lower_threshold:
+                    if brand_upper == "REDMI":
+                        # REDMI: Check if Condition-2 exists and contains "ABOVE"
+                        if has_condition_2_above and has_2a_col:
+                            # Condition-2 exists with "ABOVE" - use Above Threshold
+                            if self.above_threshold is not None and threshold_comparison_price > self.above_threshold:
+                                pct_scheme_2_raw = scheme.get('Pct_Scheme_2_A', 0) or 0
+                            else:
+                                # Check if regular Pct_Scheme_2 exists
+                                pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
+                        elif has_2a_col:
+                            # Pct_Scheme_2_A exists but no Condition-2 or no "ABOVE" - always use A
                             pct_scheme_2_raw = scheme.get('Pct_Scheme_2_A', 0) or 0
                         else:
-                            pct_scheme_2_raw = 0
+                            # No Pct_Scheme_2_A - use regular Pct_Scheme_2
+                            pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
                     else:
-                        # Non-REDMI or no CONDITION-2: Use regular Pct_Scheme_2
+                        # Non-REDMI: Use regular Pct_Scheme_2
                         pct_scheme_2_raw = scheme.get('Pct_Scheme_2', 0) or 0
                     
                     # Get other scheme values

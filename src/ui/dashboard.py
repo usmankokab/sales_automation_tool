@@ -213,7 +213,7 @@ class SIATDashboard:
         # Purchase Price Threshold for PCT Scheme-1 A/B selection
         # Show different inputs based on brand selection
         if st.session_state.selected_brand == "Redmi":
-            # REDMI: Show two threshold inputs
+            # REDMI: Show two threshold inputs for Condition-1
             st.sidebar.markdown("**Threshold Range (for REDMI 3-tier logic)**")
             col1, col2 = st.sidebar.columns(2)
             with col1:
@@ -234,6 +234,18 @@ class SIATDashboard:
                     help="Upper threshold for REDMI PCT Scheme-1 (A/B/C) selection",
                     key="upper_threshold"
                 )
+            
+            # Add Above Threshold for Condition-2
+            st.sidebar.markdown("**Above Threshold (for REDMI Condition-2)**")
+            above_threshold = st.sidebar.number_input(
+                "Above Threshold",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
+                help="Threshold for REDMI PCT Scheme-2 ABOVE condition (e.g., if scheme says 'Above 15000', enter 15000)",
+                key="above_threshold"
+            )
+            
             # Store in session state (don't set to None, leave undefined)
             if 'purchase_price_threshold' in st.session_state:
                 del st.session_state['purchase_price_threshold']
@@ -252,6 +264,8 @@ class SIATDashboard:
                 del st.session_state['lower_threshold']
             if 'upper_threshold' in st.session_state:
                 del st.session_state['upper_threshold']
+            if 'above_threshold' in st.session_state:
+                del st.session_state['above_threshold']
         
         st.sidebar.markdown("---")
         st.sidebar.markdown('<div class="sidebar-header">📊 Workbook Upload</div>', unsafe_allow_html=True)
@@ -498,17 +512,25 @@ class SIATDashboard:
             purchase_threshold = None
             lower_thresh = None
             upper_thresh = None
+            above_thresh = None
             
             if st.session_state.selected_brand == "Redmi":
-                # REDMI: Use lower and upper thresholds
+                # REDMI: Use lower, upper, and above thresholds
                 lower_thresh = st.session_state.get('lower_threshold', 0)
                 upper_thresh = st.session_state.get('upper_threshold', 0)
+                above_thresh = st.session_state.get('above_threshold', 0)
+                
                 if lower_thresh > 0 or upper_thresh > 0:
                     lower_thresh = lower_thresh if lower_thresh > 0 else None
                     upper_thresh = upper_thresh if upper_thresh > 0 else None
                 else:
                     lower_thresh = None
                     upper_thresh = None
+                
+                if above_thresh > 0:
+                    above_thresh = above_thresh
+                else:
+                    above_thresh = None
             else:
                 # Other brands: Use single purchase_price_threshold
                 purchase_threshold = st.session_state.get('purchase_price_threshold', 0)
@@ -521,7 +543,8 @@ class SIATDashboard:
                 purchase_price_threshold=purchase_threshold,
                 price_variable_column=st.session_state.price_variable_selector,
                 lower_threshold=lower_thresh,
-                upper_threshold=upper_thresh
+                upper_threshold=upper_thresh,
+                above_threshold=above_thresh
             )
             logger.info("Calculation engine initialized successfully")
 
